@@ -291,37 +291,44 @@ export function applyClashRouting(routingRules = [], outbounds = [], allProxyNam
         if (rule.sourceType === 'node') {
             // Node routing: Proxy Node → Outbound
             // Create a relay group: Node → Outbound
+            // Then add a MATCH rule so ALL traffic flows through the relay chain,
+            // achieving the 3x-ui style chain proxy effect.
             const outboundProxy = outboundToClashProxy(targetOb);
             if (!outboundProxy && !['direct', 'block'].includes(targetOb.protocol)) continue;
 
             const groupName = `${rule.name || 'Route'}`;
 
             if (targetOb.protocol === 'direct') {
-                // Node → DIRECT: just a select group that goes through the node
+                // Node → DIRECT: select group with node and DIRECT
                 if (nameSet.has(rule.sourceValue)) {
                     proxyGroups.push({
                         name: groupName,
                         type: 'select',
                         proxies: [rule.sourceValue, 'DIRECT']
                     });
+                    clashRules.push(`MATCH,${groupName}`);
                 }
             } else if (targetOb.protocol === 'block') {
+                // Node → BLOCK: select group with REJECT
                 if (nameSet.has(rule.sourceValue)) {
                     proxyGroups.push({
                         name: groupName,
                         type: 'select',
                         proxies: [rule.sourceValue, 'REJECT']
                     });
+                    clashRules.push(`MATCH,${groupName}`);
                 }
             } else {
                 // Node → Outbound: relay chain
                 const proxyName = targetOb.name;
-                if (nameSet.has(rule.sourceValue)) {
+                if (nameSet.has(rule.sourceValue) && nameSet.has(proxyName)) {
                     proxyGroups.push({
                         name: groupName,
                         type: 'relay',
                         proxies: [rule.sourceValue, proxyName]
                     });
+                    // Add MATCH rule: all traffic → relay chain
+                    clashRules.push(`MATCH,${groupName}`);
                 }
             }
         } else {
