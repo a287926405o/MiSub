@@ -19,13 +19,12 @@ const { chains } = storeToRefs(dataStore);
 
 // 导出功能
 const baseUrl = window.location.origin;
-const { profileToken } = storeToRefs(settingsStore);
 const profiles = computed(() => dataStore.profiles || []);
 const activeProfiles = computed(() => profiles.value.filter(p => !p.disabled));
 const showExportPanel = ref(false);
 
 function getProfileUrl(profile) {
-  const token = profileToken.value;
+  const token = settingsStore.config?.profileToken;
   if (!token || token === 'auto') return null;
   const identifier = profile.customId || profile.id;
   return `${baseUrl}/${token}/${identifier}`;
@@ -133,7 +132,8 @@ async function saveChain() {
 }
 
 async function deleteChain(chain) {
-  if (!confirm(t('chains.deleteConfirmBody', { name: chain.name }))) return;
+  const msg = t('chains.deleteConfirmMsg', { name: chain.name }) || '确定要删除该代理链吗？';
+  if (!window.confirm(msg)) return;
   try {
     const res = await api.delete(`/api/chains/${chain.id}`);
     if (res.success) {
