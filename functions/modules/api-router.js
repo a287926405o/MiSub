@@ -277,6 +277,14 @@ export async function handleApiRequest(request, env, context = null) {
         return createJsonResponse(diagnostic, diagnostic.success ? 200 : 400);
     }
 
+    // 链式代理导出接口（公开，客户端订阅使用）
+    if (path.startsWith('/chains/') && path.endsWith('/export') && request.method === 'GET') {
+        const chainId = path.replace('/chains/', '').replace('/export', '');
+        if (chainId) {
+            return await handleChainExport(request, env, chainId);
+        }
+    }
+
     if (!await authMiddleware(request, env)) {
         return createJsonResponse({ error: 'Unauthorized' }, 401);
     }
@@ -286,7 +294,7 @@ export async function handleApiRequest(request, env, context = null) {
         return await handleClientRequest(request, env);
     }
 
-    // Chain Proxy routes
+    // Chain Proxy routes (CRUD require auth)
     if (path === '/chains') {
         if (request.method === 'GET') {
             return await handleChainsList(request, env);
@@ -297,19 +305,8 @@ export async function handleApiRequest(request, env, context = null) {
         return createJsonResponse({ error: 'Method Not Allowed' }, 405);
     }
     if (path.startsWith('/chains/')) {
-        // Check for sub-routes first: /chains/{id}/export
-        const subRoute = path.replace('/chains/', '');
-        const slashIdx = subRoute.indexOf('/');
-        if (slashIdx !== -1) {
-            const chainId = subRoute.slice(0, slashIdx);
-            const action = subRoute.slice(slashIdx + 1);
-            if (action === 'export' && request.method === 'GET') {
-                return await handleChainExport(request, env, chainId);
-            }
-            return createJsonResponse({ error: 'Not Found' }, 404);
-        }
         // Plain /chains/{id}
-        const chainId = subRoute;
+        const chainId = path.replace('/chains/', '');
         if (!chainId) {
             return createJsonResponse({ error: 'Chain ID is required' }, 400);
         }

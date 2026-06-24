@@ -264,9 +264,6 @@ function parseProxyUrl(urlStr, name) {
  *   auto      — 根据 User-Agent 自动探测
  */
 export async function handleChainExport(request, env, chainId) {
-    if (!await authMiddleware(request, env)) {
-        return createJsonResponse({ error: 'Unauthorized' }, 401);
-    }
     if (!chainId) {
         return createJsonResponse({ success: false, message: 'Chain ID is required' }, 400);
     }
