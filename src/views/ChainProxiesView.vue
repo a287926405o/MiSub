@@ -35,18 +35,14 @@ const availableNodes = computed(() => {
   const subs = dataStore.subscriptions || [];
   subs.forEach(sub => {
     if (sub.nodes && Array.isArray(sub.nodes)) {
+      // 常规订阅：节点列表
       sub.nodes.forEach(node => {
         if (typeof node === 'string') nodes.push(node);
         else if (node?.name) nodes.push(node.name);
       });
-    }
-  });
-  (dataStore.profiles || []).forEach(profile => {
-    if (profile.manualNodes) {
-      profile.manualNodes.forEach(n => {
-        if (typeof n === 'string') nodes.push(n);
-        else if (n?.name) nodes.push(n.name);
-      });
+    } else if (sub.url && !/^https?:\/\//i.test(sub.url)) {
+      // 手动节点：单条 vless:// / socks5:// 等协议链接
+      if (sub.name) nodes.push(sub.name);
     }
   });
   return [...new Set(nodes)].sort();
