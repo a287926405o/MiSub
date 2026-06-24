@@ -135,7 +135,7 @@ async function removeChain(chain) {
   const msg = t('chains.deleteConfirmMsg', { name: chain.name }) || '确定要删除该代理链吗？';
   if (!window.confirm(msg)) return;
   try {
-    const res = await api.delete(`/api/chains/${chain.id}`);
+    const res = await api.del(`/api/chains/${chain.id}`);
     if (res.success) {
       chains.value = chains.value.filter(c => c.id !== chain.id);
       showToast(t('chains.chainDeleted'), 'success');
