@@ -23,6 +23,7 @@ export const useDataStore = defineStore('data', () => {
     const subscriptions = ref([]);
     const profiles = ref([]);
     const ruleTemplates = ref([]);
+    const chains = ref([]);
     const settings = computed(() => settingsStore.config);
 
     // Store Status
@@ -42,7 +43,8 @@ export const useDataStore = defineStore('data', () => {
     let lastSavedData = {
         subscriptions: [],
         profiles: [],
-        ruleTemplates: []
+        ruleTemplates: [],
+        chains: []
     };
 
     // --- Actions ---
@@ -56,6 +58,7 @@ export const useDataStore = defineStore('data', () => {
             subscriptions.value = cleanSubs;
             profiles.value = data.profiles || [];
             ruleTemplates.value = data.ruleTemplates || [];
+            chains.value = data.chains || [];
             settingsStore.setConfig({ ...DEFAULT_SETTINGS, ...data.config });
 
             updateSnapshot();
