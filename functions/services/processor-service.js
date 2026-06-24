@@ -12,6 +12,13 @@ import { resolveRuleTemplateSource } from '../modules/rule-template-handler.js';
 import { base64EncodeUtf8 } from '../modules/utils.js';
 import yaml from 'js-yaml';
 import { urlsToClashProxies } from '../utils/url-to-clash.js';
+import {
+    buildClashChainGroups,
+    buildSingboxChainOutbounds,
+    buildSurgeChainGroups,
+    buildLoonChainConfigs,
+    formatChainIniSection
+} from './chain-proxy-service.js';
 
 function getTemplateExtension(templateUrl) {
     const raw = typeof templateUrl === 'string' ? templateUrl.trim() : '';
@@ -139,7 +146,8 @@ export class ProcessorService {
             templateSource = { kind: 'none', value: '' },
             managedConfigUrl,
             storageAdapter,
-            userInfoHeader
+            userInfoHeader,
+            chains = []              // [Chain Proxy] Array of chain objects
         } = options || {};
 
         // Check for Base64 (simplest case)
@@ -230,10 +238,120 @@ export class ProcessorService {
              else if (targetFormat === 'singbox' || targetFormat === 'sing-box') contentType = 'application/json; charset=utf-8';
         }
 
+        // ===== Chain Proxy Injection =====
+        // Inject chain proxy configurations into the generated output
+        if (Array.isArray(chains) && chains.length > 0 && finalContent) {
+            const activeChains = chains.filter(c => c.enabled && Array.isArray(c.nodes) && c.nodes.length >= 2);
+            if (activeChains.length > 0) {
+                try {
+                    if (targetFormat === 'clash' || targetFormat === 'egern') {
+                        // Inject relay/chain proxy-groups into Clash YAML output
+                        const clashConfig = yaml.load(finalContent);
+                        if (clashConfig && typeof clashConfig === 'object') {
+                            const proxyNames = Array.isArray(clashConfig.proxies)
+                                ? clashConfig.proxies.map(p => p.name).filter(Boolean)
+                                : [];
+                            const chainGroups = buildClashChainGroups(activeChains, proxyNames);
+                            if (chainGroups.length > 0) {
+                                clashConfig['proxy-groups'] = [
+                                    ...(Array.isArray(clashConfig['proxy-groups']) ? clashConfig['proxy-groups'] : []),
+                                    ...chainGroups
+                                ];
+                                finalContent = yaml.dump(clashConfig, {
+                                    indent: 2,
+                                    lineWidth: -1,
+                                    noRefs: true,
+                                    quotingType: '"',
+                                    forceQuotes: false
+                                });
+                                headers['X-MiSub-Chain-Injected'] = String(chainGroups.length);
+                            }
+                        }
+                    } else if (targetFormat === 'singbox' || targetFormat === 'sing-box') {
+                        // Inject chain outbounds into Sing-Box JSON output
+                        const singboxConfig = JSON.parse(finalContent);
+                        if (singboxConfig && typeof singboxConfig === 'object') {
+                            const outboundTags = Array.isArray(singboxConfig.outbounds)
+                                ? singboxConfig.outbounds.map(o => o.tag).filter(Boolean)
+                                : [];
+                            const chainOutbounds = buildSingboxChainOutbounds(activeChains, outboundTags);
+                            if (chainOutbounds.length > 0) {
+                                singboxConfig.outbounds = [
+                                    ...(Array.isArray(singboxConfig.outbounds) ? singboxConfig.outbounds : []),
+                                    ...chainOutbounds
+                                ];
+                                finalContent = JSON.stringify(singboxConfig, null, 2);
+                                headers['X-MiSub-Chain-Injected'] = String(chainOutbounds.length);
+                            }
+                        }
+                    } else if (targetFormat.startsWith('surge')) {
+                        // Inject relay groups into Surge output (append to [Proxy Group] section)
+                        const proxyNames = extractProxyNamesFromSurge(finalContent);
+                        const chainGroups = buildSurgeChainGroups(activeChains, proxyNames);
+                        if (chainGroups.length > 0) {
+                            const chainSection = '\n' + chainGroups.map(g =>
+                                `${g.name} = relay, ${g.proxies.join(', ')}`
+                            ).join('\n');
+                            // Append to [Proxy Group] section or create it
+                            if (finalContent.includes('[Proxy Group]')) {
+                                finalContent = finalContent.replace(/(\[Proxy Group\])/,
+                                    `$1${chainSection}`);
+                            } else {
+                                finalContent += `\n[Proxy Group]${chainSection}\n`;
+                            }
+                            headers['X-MiSub-Chain-Injected'] = String(chainGroups.length);
+                        }
+                    } else if (targetFormat === 'loon') {
+                        // Inject Proxy Chain into Loon output
+                        const proxyNames = extractProxyNamesFromSurge(finalContent);
+                        const chainConfigs = buildLoonChainConfigs(activeChains, proxyNames);
+                        if (chainConfigs.length > 0) {
+                            const chainSection = '\n' + chainConfigs.map(c =>
+                                `${c.name} = ${c.nodes.join(', ')}`
+                            ).join('\n');
+                            if (finalContent.includes('[Proxy Chain]')) {
+                                finalContent = finalContent.replace(/(\[Proxy Chain\])/,
+                                    `$1${chainSection}`);
+                            } else {
+                                finalContent += `\n[Proxy Chain]${chainSection}\n`;
+                            }
+                            headers['X-MiSub-Chain-Injected'] = String(chainConfigs.length);
+                        }
+                    }
+                } catch (chainError) {
+                    console.warn('[ChainProxy] Failed to inject chain configs:', chainError?.message || chainError);
+                }
+            }
+        }
+
         return {
             content: finalContent,
             contentType,
             headers
         };
     }
+}
+
+/**
+ * Extract proxy/outbound names from Surge-style INI content.
+ * Looks for lines like: ProxyName = protocol, host, port, ...
+ */
+function extractProxyNamesFromSurge(content) {
+    if (typeof content !== 'string') return [];
+    const names = [];
+    const lines = content.split('\n');
+    let inProxySection = false;
+    for (const line of lines) {
+        const trimmed = line.trim();
+        if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+            const section = trimmed.slice(1, -1).toLowerCase();
+            inProxySection = section === 'proxy' || section === 'proxy group';
+            continue;
+        }
+        if (inProxySection && trimmed.includes('=') && !trimmed.startsWith(';') && !trimmed.startsWith('#')) {
+            const name = trimmed.split('=')[0].trim();
+            if (name) names.push(name);
+        }
+    }
+    return names;
 }
