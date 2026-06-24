@@ -47,6 +47,12 @@ import {
 } from './handlers/guestbook-handler.js';
 import { handleGithubReleaseRequest } from './handlers/github-proxy-handler.js'; // [NEW] Import handler
 import { handleParseSubscription } from './parse-subscription-handler.js';
+import {
+    handleChainsList,
+    handleChainCreate,
+    handleChainUpdate,
+    handleChainDelete
+} from './handlers/chain-handler.js';
 import { safeFetchPublicUrl, validatePublicFetchUrl, redactUrl } from './security-utils.js';
 import { normalizeSubconverterBackend } from './subscription/main-handler.js';
 import { maybeRunScheduledTasks } from './scheduled-task-runner.js';
@@ -277,6 +283,30 @@ export async function handleApiRequest(request, env, context = null) {
     // Auth-only route for client management (POST, DELETE, etc.)
     if (path.startsWith('/clients')) {
         return await handleClientRequest(request, env);
+    }
+
+    // Chain Proxy routes
+    if (path === '/chains') {
+        if (request.method === 'GET') {
+            return await handleChainsList(request, env);
+        }
+        if (request.method === 'POST') {
+            return await handleChainCreate(request, env);
+        }
+        return createJsonResponse({ error: 'Method Not Allowed' }, 405);
+    }
+    if (path.startsWith('/chains/')) {
+        const chainId = path.replace('/chains/', '');
+        if (!chainId) {
+            return createJsonResponse({ error: 'Chain ID is required' }, 400);
+        }
+        if (request.method === 'PUT') {
+            return await handleChainUpdate(request, env, chainId);
+        }
+        if (request.method === 'DELETE') {
+            return await handleChainDelete(request, env, chainId);
+        }
+        return createJsonResponse({ error: 'Method Not Allowed' }, 405);
     }
 
     if (path === '/test_notification') {

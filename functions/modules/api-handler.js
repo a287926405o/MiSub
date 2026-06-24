@@ -13,6 +13,7 @@ import { maybeRunScheduledTasks } from './scheduled-task-runner.js';
 
 import { KV_KEY_SUBS, KV_KEY_PROFILES, KV_KEY_SETTINGS, DEFAULT_SETTINGS as defaultSettings } from './config.js';
 import { listRuleTemplates } from './rule-template-handler.js';
+import { getChainsData } from './handlers/chain-handler.js';
 
 const PROFILE_DOWNLOAD_COUNT_PREFIX = 'misub_profile_download_count_';
 
@@ -144,7 +145,7 @@ export async function handleDataRequest(env, context = null) {
         }
         const storageAdapter = StorageFactory.createAdapter(env, storageType);
         const cachedSettings = await SettingsCache.get(env);
-        const [misubs, rawProfiles, settings, ruleTemplates] = await Promise.all([
+        const [misubs, rawProfiles, settings, ruleTemplates, chains] = await Promise.all([
             typeof storageAdapter.getAllSubscriptions === 'function'
                 ? storageAdapter.getAllSubscriptions()
                 : storageAdapter.get(KV_KEY_SUBS).then(res => res || []),
@@ -154,6 +155,10 @@ export async function handleDataRequest(env, context = null) {
             Promise.resolve(cachedSettings || {}).then(res => res || {}),
             listRuleTemplates(storageAdapter).catch(error => {
                 console.warn('[API /data] Failed to load custom rule templates:', error?.message || error);
+                return [];
+            }),
+            getChainsData(env).catch(error => {
+                console.warn('[API /data] Failed to load chains:', error?.message || error);
                 return [];
             })
         ]);
@@ -179,7 +184,7 @@ export async function handleDataRequest(env, context = null) {
         } catch (taskError) {
             console.warn('[ScheduledTasks] lazy check init failed:', taskError?.message || taskError);
         }
-        return createJsonResponse({ misubs, profiles, ruleTemplates, config });
+        return createJsonResponse({ misubs, profiles, ruleTemplates, chains, config });
     } catch (e) {
         console.error('[API Error /data] Failed to read from storage', {
             error: e?.message,
