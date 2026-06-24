@@ -5,6 +5,7 @@ import { storeToRefs } from 'pinia';
 import { useEditorStore } from '../stores/editor.js';
 import { api } from '../lib/http.js';
 import { useToastStore } from '../stores/toast';
+import { extractNodeName } from '../lib/utils.js';
 
 const dataStore = useDataStore();
 const editorStore = useEditorStore();
@@ -24,18 +25,51 @@ const SOURCE_TYPES = [
   { value: 'all', label: '兜底规则', desc: '所有剩余流量走此出站（相当于 MATCH）' }
 ];
 
+/**
+ * 收集所有可用的代理节点名称供路由规则参考。
+ * 
+ * 数据模型说明：
+ * - subscriptions 数组中既包含「订阅链接」(http/https) 也包含「手动节点」(ss://, vmess:// 等)
+ * - 手动节点的名称可以从 URL 中解析 (extractNodeName)
+ * - 订阅链接的节点名只有服务器端解析后才可知，这里尝试从订阅名称推断
+ * - 最终由用户手动输入精确的节点名来匹配
+ */
 const availableProxyNodes = computed(() => {
-  const nodes = [];
-  const subs = dataStore.subscriptions || [];
-  subs.forEach(sub => {
-    if (sub.nodes && Array.isArray(sub.nodes)) {
-      sub.nodes.forEach(node => {
-        if (typeof node === 'string') nodes.push(node);
-        else if (node?.name) nodes.push(node.name);
-      });
+  const nodes = new Set();
+  const subscriptions = dataStore.subscriptions || [];
+  
+  for (const sub of subscriptions) {
+    if (!sub || !sub.url) continue;
+    
+    // 1. 手动节点 (非 http/https 链接)：从 URL 解析名称
+    if (!sub.url.startsWith('http://') && !sub.url.startsWith('https://')) {
+      const name = extractNodeName(sub.url);
+      if (name) nodes.add(name);
     }
-  });
-  return [...new Set(nodes)].sort();
+    
+    // 2. 如果订阅本身有 name/remark 属性，也作为候选
+    if (sub.name) nodes.add(sub.name);
+    if (sub.remark) nodes.add(sub.remark);
+    
+    // 3. 如果已有解析后的节点列表 (某些场景下可能缓存)
+    if (sub.nodes && Array.isArray(sub.nodes)) {
+      for (const node of sub.nodes) {
+        if (typeof node === 'string') nodes.add(node);
+        else if (node?.name) nodes.add(node.name);
+      }
+    }
+  }
+  
+  return [...nodes].sort();
+});
+
+/** 节点搜索过滤（用于输入提示） */
+const nodeSearch = ref('');
+const filteredNodeSuggestions = computed(() => {
+  const all = availableProxyNodes.value;
+  if (!nodeSearch.value) return all.slice(0, 50);
+  const q = nodeSearch.value.toLowerCase();
+  return all.filter(n => n.toLowerCase().includes(q)).slice(0, 50);
 });
 
 const activeOutbounds = computed(() => (outbounds.value || []).filter(o => o.enabled));
@@ -244,10 +278,20 @@ onMounted(async () => {
                 <template v-else>匹配值</template>
               </label>
               <template v-if="form.sourceType === 'node'">
-                <select v-model="form.sourceValue" class="form-input">
-                  <option value="">选择代理节点...</option>
-                  <option v-for="node in availableProxyNodes" :key="node" :value="node">{{ node }}</option>
-                </select>
+                <div class="node-input-wrap">
+                  <input v-model="form.sourceValue" class="form-input" list="node-suggestions"
+                    placeholder="输入节点名称（如「香港 01」「日本 VPS」等）"
+                    @input="nodeSearch = form.sourceValue" />
+                  <datalist id="node-suggestions">
+                    <option v-for="node in filteredNodeSuggestions" :key="node" :value="node" />
+                  </datalist>
+                  <div v-if="availableProxyNodes.length > 0" class="node-hint">
+                    💡 已知节点：{{ availableProxyNodes.slice(0, 8).join('、') }}{{ availableProxyNodes.length > 8 ? '...' : '' }}
+                  </div>
+                  <div v-else class="node-hint">
+                    ⚠️ 暂未检测到节点名称。订阅节点名只有在服务端解析后才可知，请直接输入您希望在路由规则中匹配的节点名称。
+                  </div>
+                </div>
               </template>
               <template v-else>
                 <input v-model="form.sourceValue" class="form-input"
@@ -328,6 +372,8 @@ onMounted(async () => {
 .form-card { padding: 16px; margin-bottom: 16px; border: 1px solid var(--border-color, #334155); border-radius: 10px; background: var(--input-bg, #0f172a); }
 .form-card-title { font-weight: 600; margin-bottom: 12px; font-size: 0.95rem; }
 .form-hint { font-size: 0.85rem; color: var(--primary, #3b82f6); margin-top: 4px; }
+.node-input-wrap { position: relative; }
+.node-hint { font-size: 0.78rem; color: var(--text-secondary, #94a3b8); margin-top: 6px; line-height: 1.4; }
 .modal-footer { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--border-color, #334155); }
 .btn { display: inline-flex; align-items: center; gap: 6px; padding: 8px 16px; border-radius: 8px; border: 1px solid var(--border-color, #334155); background: var(--btn-bg, #334155); color: inherit; cursor: pointer; font-size: 0.875rem; }
 .btn-primary { background: var(--primary, #3b82f6); border-color: var(--primary, #3b82f6); color: white; }
