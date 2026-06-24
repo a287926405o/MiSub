@@ -435,8 +435,18 @@ export class ProcessorService {
 
                             // 2. Apply routing rules
                             const allTags = [...existingTags, ...newOutbounds.map(o => o.tag)];
-                            const { routeRules } = applySingboxRouting(activeRules, activeOutbounds, allTags);
+                            const { chainOutbounds, routeRules } = applySingboxRouting(activeRules, activeOutbounds, allTags);
 
+                            // 2a. Inject chain outbounds (node → outbound chaining)
+                            if (chainOutbounds.length > 0) {
+                                singboxConfig.outbounds = [
+                                    ...(Array.isArray(singboxConfig.outbounds) ? singboxConfig.outbounds : []),
+                                    ...chainOutbounds
+                                ];
+                                headers['X-MiSub-Chain-Injected'] = String(chainOutbounds.length);
+                            }
+
+                            // 2b. Inject route rules
                             if (routeRules.length > 0) {
                                 if (!singboxConfig.route) {
                                     singboxConfig.route = {};

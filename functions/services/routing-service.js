@@ -379,6 +379,7 @@ export function applyClashRouting(routingRules = [], outbounds = [], allProxyNam
  */
 export function applySingboxRouting(routingRules = [], outbounds = [], allOutboundTags = []) {
     const routeRules = [];
+    const chainOutbounds = [];
     const tagSet = new Set(allOutboundTags);
     const outboundMap = {};
     outbounds.filter(o => o.enabled).forEach(ob => { outboundMap[ob.id] = ob; outboundMap[ob.name] = ob; });
@@ -396,14 +397,45 @@ export function applySingboxRouting(routingRules = [], outbounds = [], allOutbou
             : targetOb.name;
 
         if (rule.sourceType === 'node') {
-            // Node routing → create a chain outbound or route rule
-            // For Sing-Box, we create a simple route rule
+            // -------------------------------------------------------
+            // Node routing: Proxy Node → Outbound (chain proxy)
+            // In Sing-Box, we create a `chain` outbound that links
+            // the source proxy node with the target outbound.
+            //
+            // Sing-Box `chain` (1.8.0+) routes connections through
+            // a list of outbounds sequentially:
+            //   Client → Chain Outbound → Node (VLESS) → Outbound (SOCKS5) → Internet
+            // -------------------------------------------------------
             if (tagSet.has(rule.sourceValue)) {
-                routeRules.push({
-                    outbound: targetTag,
-                    // Match by inbound tag (the proxy node name as tag)
-                    inbound: [rule.sourceValue]
-                });
+                const chainTag = `${rule.name || 'chain'}`;
+                const chainMembers = [rule.sourceValue];
+
+                if (targetOb.protocol === 'direct') {
+                    // Node → DIRECT: chain end is the node itself
+                    chainOutbounds.push({
+                        tag: chainTag,
+                        type: 'direct',
+                    });
+                    // Route all traffic through this direct outbound (just the node)
+                    routeRules.push({ outbound: chainTag });
+                } else if (targetOb.protocol === 'block') {
+                    // Node → BLOCK: use block/hdrop outbound
+                    chainOutbounds.push({
+                        tag: chainTag,
+                        type: 'block',
+                    });
+                    routeRules.push({ outbound: chainTag });
+                } else {
+                    // Node → Outbound: create a chain outbound
+                    chainMembers.push(targetTag);
+                    chainOutbounds.push({
+                        tag: chainTag,
+                        type: 'chain',
+                        outbounds: chainMembers
+                    });
+                    // Route all traffic through this chain
+                    routeRules.push({ outbound: chainTag });
+                }
             }
         } else {
             // Traffic-based routing
@@ -440,7 +472,7 @@ export function applySingboxRouting(routingRules = [], outbounds = [], allOutbou
         }
     }
 
-    return { routeRules };
+    return { chainOutbounds, routeRules };
 }
 
 /**
