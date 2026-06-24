@@ -3,6 +3,7 @@ import { ref, computed, onMounted } from 'vue';
 import { useDataStore } from '../stores/useDataStore.js';
 import { storeToRefs } from 'pinia';
 import { useEditorStore } from '../stores/editor.js';
+import { useSettingsStore } from '../stores/settings.js';
 import { api } from '../lib/http.js';
 import { useToastStore } from '../stores/toast';
 import { useI18n } from '../i18n/index.js';
@@ -10,10 +11,29 @@ import { useI18n } from '../i18n/index.js';
 const { t } = useI18n();
 const dataStore = useDataStore();
 const editorStore = useEditorStore();
+const settingsStore = useSettingsStore();
 const toastStore = useToastStore();
 const { showToast } = toastStore;
 
 const { chains } = storeToRefs(dataStore);
+
+// 导出功能
+const baseUrl = window.location.origin;
+const { profileToken } = storeToRefs(settingsStore);
+const profiles = computed(() => dataStore.profiles || []);
+const activeProfiles = computed(() => profiles.value.filter(p => !p.disabled));
+const showExportPanel = ref(false);
+
+function getProfileUrl(profile) {
+  const token = profileToken.value;
+  if (!token || token === 'auto') return null;
+  const identifier = profile.customId || profile.id;
+  return `${baseUrl}/${token}/${identifier}`;
+}
+function copyUrl(url) {
+  if (!url) { showToast('请在设置中配置固定的订阅组分享Token', 'error'); return; }
+  navigator.clipboard.writeText(url).then(() => showToast('订阅链接已复制', 'success')).catch(() => showToast('复制失败', 'error'));
+}
 const isLoading = ref(false);
 const showEditor = ref(false);
 const editingChain = ref(null);
@@ -167,6 +187,50 @@ onMounted(async () => {
       <div class="flex gap-4 mt-3 text-sm text-gray-500 dark:text-gray-400">
         <span>{{ chains.length }} chains</span>
         <span>{{ enabledCount }} enabled</span>
+      </div>
+    </div>
+
+    <!-- ===== 使用说明 & 导出 ===== -->
+    <div class="mb-4 bg-gradient-to-r from-blue-50 to-sky-50 dark:from-blue-900/20 dark:to-sky-900/20 border border-blue-100/80 dark:border-blue-800/30 misub-radius-lg p-4">
+      <div class="flex items-start gap-3">
+        <svg class="w-5 h-5 mt-0.5 text-blue-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+        </svg>
+        <div class="text-sm text-blue-800 dark:text-blue-200 flex-1">
+          <p class="font-medium mb-1">{{ t('chains.howToUseTitle') }}</p>
+          <p>{{ t('chains.howToUseDesc') }}</p>
+          <button @click="showExportPanel = !showExportPanel" class="mt-2 inline-flex items-center gap-1 text-blue-600 dark:text-blue-400 hover:underline">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+            </svg>
+            {{ showExportPanel ? t('chains.hideExport') : t('chains.showExport') }}
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 导出面板 -->
+    <div v-if="showExportPanel" class="mb-4 bg-white/80 dark:bg-gray-900/60 border border-gray-100/80 dark:border-white/10 misub-radius-lg p-4 space-y-3">
+      <h3 class="text-sm font-semibold text-gray-700 dark:text-gray-300">{{ t('chains.exportTitle') }}</h3>
+      <p class="text-xs text-gray-500 dark:text-gray-400">{{ t('chains.exportDesc') }}</p>
+      <div v-if="activeProfiles.length === 0" class="text-sm text-gray-400 italic">{{ t('chains.noProfiles') }}</div>
+      <div v-for="profile in activeProfiles" :key="profile.id" class="flex items-center justify-between p-3 bg-gray-50/50 dark:bg-gray-800/30 rounded-lg">
+        <div class="min-w-0 flex-1">
+          <p class="text-sm font-medium text-gray-800 dark:text-gray-200 truncate">{{ profile.name || 'Unnamed' }}</p>
+          <p v-if="getProfileUrl(profile)" class="text-xs text-gray-400 dark:text-gray-500 truncate mt-0.5 font-mono">{{ getProfileUrl(profile) }}</p>
+          <p v-else class="text-xs text-amber-500">{{ t('chains.tokenMissing') }}</p>
+        </div>
+        <div class="flex gap-1.5 shrink-0 ml-2">
+          <button @click="copyUrl(getProfileUrl(profile) + '?clash')" class="px-2.5 py-1 text-xs bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 text-gray-600 dark:text-gray-300 rounded" title="Clash">Clash</button>
+          <button @click="copyUrl(getProfileUrl(profile) + '?base64')" class="px-2.5 py-1 text-xs bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 text-gray-600 dark:text-gray-300 rounded" title="Sing-Box">Sing-Box</button>
+          <button @click="copyUrl(getProfileUrl(profile) + '?surge')" class="px-2.5 py-1 text-xs bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 text-gray-600 dark:text-gray-300 rounded" title="Surge">Surge</button>
+          <button @click="copyUrl(getProfileUrl(profile))" class="px-2.5 py-1 text-xs bg-primary-100 dark:bg-primary-900/30 hover:bg-primary-200 dark:hover:bg-primary-800/30 text-primary-600 dark:text-primary-400 rounded font-medium">
+            <svg class="w-3.5 h-3.5 inline mr-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+            </svg>
+            {{ t('actions.copy') }}
+          </button>
+        </div>
       </div>
     </div>
 

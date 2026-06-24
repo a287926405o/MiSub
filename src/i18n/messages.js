@@ -271,7 +271,15 @@ export const messages = {
       proxyChainOutput: '代理链输出',
       howItWorks: '工作原理',
       howItWorksDesc: '代理链让您的网络流量依次经过多个代理节点：客户端 → 节点1 → 节点2 → ... → 目标网站。每个节点只认识上一个节点，增强了隐私性和网络拓扑灵活性。',
-      compatibleNote: '兼容性说明：Relay 模式适用于 Clash Meta/Mihomo、Surge、Loon；Chain 模式适用于 Sing-Box 和最新版 Mihomo。'
+      compatibleNote: '兼容性说明：Relay 模式适用于 Clash Meta/Mihomo、Surge、Loon；Chain 模式适用于 Sing-Box 和最新版 Mihomo。',
+      howToUseTitle: '如何使用链式代理？',
+      howToUseDesc: '链式代理会自动注入到你的订阅输出中。创建并启用代理链后，直接使用下方的订阅链接导入客户端，链式代理组就会自动出现在配置中。',
+      showExport: '查看订阅导出链接',
+      hideExport: '收起导出链接',
+      exportTitle: '导出带链式代理的订阅',
+      exportDesc: '选择一个订阅组，复制对应客户端的链接到 Clash/Sing-Box/Surge 等客户端中导入，链式代理配置将自动包含在内。',
+      noProfiles: '暂无可用的订阅组，请先在「我的订阅」页面创建。',
+      tokenMissing: '⚠️ 请先在「设置」中配置「订阅组分享Token」'
     },
     nodePreview: {
       profileTitle: '订阅组节点预览 - {name}',
@@ -1531,7 +1539,15 @@ export const messages = {
       howItWorks: 'How It Works',
       howItWorksDesc: 'A proxy chain routes your traffic through multiple nodes in sequence: Client → Node1 → Node2 → ... → Destination. Each node only knows the previous node, enhancing privacy and network topology flexibility.',
       compatibleNote: 'Compatibility: Relay mode works with Clash Meta/Mihomo, Surge, Loon. Chain mode works with Sing-Box and newer Mihomo versions.',
-      loadError: 'Failed to load chains'
+      loadError: 'Failed to load chains',
+      howToUseTitle: 'How to use chain proxies?',
+      howToUseDesc: 'Chain proxies are automatically injected into your subscription output. Once you create and enable a chain, use the subscription links below to import into your client — the chain proxy groups will appear automatically.',
+      showExport: 'Show export links',
+      hideExport: 'Hide export links',
+      exportTitle: 'Export subscription with chain proxies',
+      exportDesc: 'Select a profile and copy the link for your client (Clash/Sing-Box/Surge). The chain proxy configuration will be included automatically.',
+      noProfiles: 'No profiles available. Create one in "My Subscriptions" first.',
+      tokenMissing: '⚠️ Please configure a "Share Token" in Settings first.'
     },
     nodePreview: {
       profileTitle: 'Profile node preview - {name}',
