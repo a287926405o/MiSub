@@ -3,7 +3,7 @@ compatibility_date = "2024-04-01"
 compatibility_flags = ["nodejs_compat"]
 
 # Cloudflare Pages 部署配置
-pages_build_output = "dist"
+pages_build_output_dir = "dist"
 main = "functions"
 
 build = { command = "npm run build", cwd = "./" }
