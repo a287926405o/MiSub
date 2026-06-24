@@ -53,6 +53,7 @@ import {
     handleChainUpdate,
     handleChainDelete
 } from './handlers/chain-handler.js';
+import { handleChainExport } from './handlers/chain-handler.js';
 import { safeFetchPublicUrl, validatePublicFetchUrl, redactUrl } from './security-utils.js';
 import { normalizeSubconverterBackend } from './subscription/main-handler.js';
 import { maybeRunScheduledTasks } from './scheduled-task-runner.js';
@@ -296,7 +297,19 @@ export async function handleApiRequest(request, env, context = null) {
         return createJsonResponse({ error: 'Method Not Allowed' }, 405);
     }
     if (path.startsWith('/chains/')) {
-        const chainId = path.replace('/chains/', '');
+        // Check for sub-routes first: /chains/{id}/export
+        const subRoute = path.replace('/chains/', '');
+        const slashIdx = subRoute.indexOf('/');
+        if (slashIdx !== -1) {
+            const chainId = subRoute.slice(0, slashIdx);
+            const action = subRoute.slice(slashIdx + 1);
+            if (action === 'export' && request.method === 'GET') {
+                return await handleChainExport(request, env, chainId);
+            }
+            return createJsonResponse({ error: 'Not Found' }, 404);
+        }
+        // Plain /chains/{id}
+        const chainId = subRoute;
         if (!chainId) {
             return createJsonResponse({ error: 'Chain ID is required' }, 400);
         }

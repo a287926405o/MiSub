@@ -23,6 +23,14 @@ const profiles = computed(() => dataStore.profiles || []);
 const activeProfiles = computed(() => profiles.value.filter(p => !p.disabled));
 const showExportPanel = ref(false);
 
+function getChainExportUrl(chain) {
+  return `${baseUrl}/api/chains/${chain.id}/export?target=clash`;
+}
+function copyChainExport(chain) {
+  const url = getChainExportUrl(chain);
+  navigator.clipboard.writeText(url).then(() => showToast(t('chains.exportCopied'), 'success')).catch(() => showToast('复制失败', 'error'));
+}
+
 function getProfileUrl(profile) {
   const token = settingsStore.config?.profileToken;
   if (!token || token === 'auto') return null;
@@ -282,6 +290,12 @@ onMounted(async () => {
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
             </svg>
             {{ t('actions.edit') }}
+          </button>
+          <button @click="copyChainExport(chain)"
+            class="inline-flex items-center justify-center px-3 py-1.5 text-xs font-medium text-green-600 dark:text-green-400 bg-green-50 dark:bg-green-900/20 hover:bg-green-100 dark:hover:bg-green-900/40 misub-radius-lg" title="复制链式代理订阅链接">
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+            </svg>
           </button>
           <button @click="removeChain(chain)"
             class="inline-flex items-center justify-center px-3 py-1.5 text-xs font-medium text-red-500 hover:text-red-700 bg-red-50 dark:bg-red-900/20 hover:bg-red-100 dark:hover:bg-red-900/40 misub-radius-lg">

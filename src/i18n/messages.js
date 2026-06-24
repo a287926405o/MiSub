@@ -280,7 +280,8 @@ export const messages = {
       exportTitle: '导出带链式代理的订阅',
       exportDesc: '选择一个订阅组，复制对应客户端的链接到 Clash/Sing-Box/Surge 等客户端中导入，链式代理配置将自动包含在内。',
       noProfiles: '暂无可用的订阅组，请先在「我的订阅」页面创建。',
-      tokenMissing: '⚠️ 请先在「设置」中配置「订阅组分享Token」'
+      tokenMissing: '⚠️ 请先在「设置」中配置「订阅组分享Token」',
+      exportCopied: '链式代理订阅链接已复制'
     },
     nodePreview: {
       profileTitle: '订阅组节点预览 - {name}',
@@ -1549,7 +1550,8 @@ export const messages = {
       exportTitle: 'Export subscription with chain proxies',
       exportDesc: 'Select a profile and copy the link for your client (Clash/Sing-Box/Surge). The chain proxy configuration will be included automatically.',
       noProfiles: 'No profiles available. Create one in "My Subscriptions" first.',
-      tokenMissing: '⚠️ Please configure a "Share Token" in Settings first.'
+      tokenMissing: '⚠️ Please configure a "Share Token" in Settings first.',
+      exportCopied: 'Chain proxy subscription link copied'
     },
     nodePreview: {
       profileTitle: 'Profile node preview - {name}',

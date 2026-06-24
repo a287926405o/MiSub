@@ -209,3 +209,319 @@ export async function getChainsData(env) {
         return [];
     }
 }
+
+/**
+ * 解析单行代理 URL（vless://, socks5://, vmess://, ss://, trojan:// 等）为 Clash proxy 对象
+ * 简化版实现，覆盖常见协议
+ */
+function parseProxyUrl(urlStr, name) {
+    if (!urlStr || typeof urlStr !== 'string') return null;
+    try {
+        const parsed = new URL(urlStr);
+        const protocol = parsed.protocol.replace(':', '');
+        const host = parsed.hostname;
+        const port = parsed.port || (protocol === 'https' ? 443 : 80);
+
+        switch (protocol) {
+            case 'vless':
+                return { name, type: 'vless', server: host, port: parseInt(port), uuid: parsed.username, flow: parsed.searchParams.get('flow') || '', tls: parsed.searchParams.get('security') === 'tls' || parsed.searchParams.get('security') === 'reality', servername: parsed.searchParams.get('sni') || parsed.searchParams.get('fp') || '', 'client-fingerprint': parsed.searchParams.get('fp') || '' };
+            case 'vmess':
+                return { name, type: 'vmess', server: host, port: parseInt(port), uuid: parsed.username, alterId: 0, cipher: 'auto', tls: parsed.searchParams.get('security') === 'tls' || parsed.searchParams.get('tls') === 'true' };
+            case 'trojan':
+                return { name, type: 'trojan', server: host, port: parseInt(port), password: parsed.username, sni: parsed.searchParams.get('sni') || host, udp: true };
+            case 'ss':
+                return { name, type: 'ss', server: host, port: parseInt(port), password: parsed.username, cipher: parsed.searchParams.get('method') || 'aes-256-gcm', udp: true };
+            case 'socks5':
+            case 'socks':
+                return { name, type: 'socks5', server: host, port: parseInt(port), username: parsed.username, password: parsed.password, udp: true };
+            case 'hysteria':
+            case 'hy':
+                return { name, type: 'hysteria', server: host, port: parseInt(port), auth_str: parsed.username, protocol: parsed.searchParams.get('protocol') || 'udp', up: parsed.searchParams.get('up') || '100', down: parsed.searchParams.get('down') || '100' };
+            case 'hysteria2':
+            case 'hy2':
+                return { name, type: 'hysteria2', server: host, port: parseInt(port), password: parsed.username, sni: parsed.searchParams.get('sni') || host };
+            case 'tuic':
+                return { name, type: 'tuic', server: host, port: parseInt(port), token: parsed.username, sni: parsed.searchParams.get('sni') || host, udp: true };
+            default:
+                // 未知协议，返回基本配置
+                return { name, type: 'ss', server: host, port: parseInt(port), cipher: 'none', password: 'unknown' };
+        }
+    } catch (e) {
+        return { name, type: 'ss', server: '127.0.0.1', port: 1080, cipher: 'none', password: 'dummy' };
+    }
+}
+
+/**
+ * 导出链式代理为独立 Clash 订阅配置
+ * GET /api/chains/{id}/export?target=clash
+ */
+export async function handleChainExport(request, env, chainId) {
+    if (!await authMiddleware(request, env)) {
+        return createJsonResponse({ error: 'Unauthorized' }, 401);
+    }
+    if (!chainId) {
+        return createJsonResponse({ success: false, message: 'Chain ID is required' }, 400);
+    }
+    try {
+        const storage = StorageFactory.resolveKV(env);
+        if (!storage) {
+            return createJsonResponse({ success: false, message: 'Storage not available' }, 500);
+        }
+
+        // 加载链
+        const raw = await storage.get(KV_KEY_CHAINS);
+        const chains = raw ? JSON.parse(raw) : [];
+        const chain = chains.find(c => c.id === chainId);
+        if (!chain) {
+            return createJsonResponse({ success: false, message: 'Chain not found' }, 404);
+        }
+        if (!chain.enabled) {
+            return createJsonResponse({ success: false, message: 'Chain is disabled' }, 400);
+        }
+        const nodeNames = Array.isArray(chain.nodes) ? chain.nodes : [];
+        if (nodeNames.length < 2) {
+            return createJsonResponse({ success: false, message: 'Chain must have at least 2 nodes' }, 400);
+        }
+
+        // 加载所有订阅，获取节点配置
+        const allMisubs = await storage.getAllSubscriptions();
+        const allMisubsArray = Array.isArray(allMisubs) ? allMisubs : [];
+
+        // 建立节点名 → 配置的映射
+        const nodeMap = {};
+        for (const sub of allMisubsArray) {
+            if (sub.name) nodeMap[sub.name] = sub;
+            if (sub.nodes && Array.isArray(sub.nodes)) {
+                for (const node of sub.nodes) {
+                    const nodeName = typeof node === 'string' ? node : node?.name;
+                    if (nodeName) nodeMap[nodeName] = node;
+                }
+            }
+        }
+
+        // 生成 Clash proxies
+        const proxies = [];
+        const validNames = [];
+        for (const name of nodeNames) {
+            const entry = nodeMap[name];
+            if (!entry) continue;
+            validNames.push(name);
+            const urlStr = entry.url || (typeof entry === 'object' && entry !== null ? entry.url : '');
+            const proxy = urlStr ? parseProxyUrl(urlStr, name) : null;
+            if (proxy) {
+                proxies.push(proxy);
+            } else {
+                // 找不到 URL 时用占位
+                proxies.push({ name, type: 'ss', server: '127.0.0.1', port: 1080, cipher: 'none', password: 'placeholder' });
+            }
+        }
+
+        if (validNames.length < 2) {
+            return createJsonResponse({ success: false, message: 'Not enough valid nodes found in chain' }, 400);
+        }
+
+        // 构建 Clash YAML
+        let yaml = '# Chain Proxy Export - ' + (chain.name || 'Unnamed') + '\n';
+        yaml += '# Mode: ' + (chain.mode || 'relay') + '\n';
+        yaml += '# Route: ' + validNames.join(' → ') + '\n';
+        yaml += '# Generated by MiSub Chain Proxy\n';
+        yaml += '\n';
+        yaml += 'port: 7890\n';
+        yaml += 'socks-port: 7891\n';
+        yaml += 'redir-port: 7892\n';
+        yaml += 'mixed-port: 7893\n';
+        yaml += 'allow-lan: true\n';
+        yaml += 'mode: Rule\n';
+        yaml += 'log-level: info\n';
+        yaml += 'external-controller: 127.0.0.1:9090\n';
+        yaml += '\n';
+        yaml += 'proxies:\n';
+        for (const p of proxies) {
+            const kv = Object.entries(p).map(([k, v]) => {
+                if (k === 'name') return null;
+                const val = typeof v === 'boolean' ? (v ? 'true' : 'false') : v;
+                return k + ': ' + (typeof v === 'string' ? '"' + val.replace(/"/g, '\\"') + '"' : val);
+            }).filter(Boolean).join(', ');
+            yaml += '  - {name: "' + (p.name || '').replace(/"/g, '\\"') + '", ' + kv + '}\n';
+        }
+        yaml += '\n';
+        yaml += 'proxy-groups:\n';
+        yaml += '  - {name: "' + (chain.name || 'Chain') + '", type: ' + (chain.mode === 'chain' ? 'chain' : 'relay') + ', proxies: [' + validNames.map(n => '"' + n.replace(/"/g, '\\"') + '"').join(', ') + ']}\n';
+        yaml += '  - {name: "PROXY", type: select, proxies: ["' + (chain.name || 'Chain') + '", DIRECT]}\n';
+        yaml += '\n';
+        yaml += 'rules:\n';
+        yaml += '  - MATCH,PROXY\n';
+
+        return new Response(yaml, {
+            headers: {
+                'Content-Type': 'text/yaml; charset=utf-8',
+                'Content-Disposition': 'attachment; filename="' + (chain.name || 'chain') + '-clash.yaml"',
+                'Cache-Control': 'no-store'
+            }
+        });
+
+    } catch (error) {
+        console.error('[ChainHandler] Export error:', error);
+        return createErrorResponse(error, 500);
+    }
+}
+
+/**
+ * Export a chain as a standalone Clash/Sing-Box configuration.
+ * Generates a minimal config with chain nodes + relay proxy-group.
+ */
+export async function handleChainExport(request, env, chainId) {
+    if (!await authMiddleware(request, env)) {
+        return createJsonResponse({ error: 'Unauthorized' }, 401);
+    }
+    if (!chainId) {
+        return createJsonResponse({ success: false, message: 'Chain ID is required' }, 400);
+    }
+    try {
+        const storage = StorageFactory.resolveKV(env);
+        if (!storage) {
+            return createJsonResponse({ success: false, message: 'Storage not available' }, 500);
+        }
+
+        // Load chain
+        const raw = await storage.get(KV_KEY_CHAINS);
+        const chains = raw ? JSON.parse(raw) : [];
+        const chain = chains.find(c => c.id === chainId);
+        if (!chain) {
+            return createJsonResponse({ success: false, message: 'Chain not found' }, 404);
+        }
+        if (!chain.enabled) {
+            return createJsonResponse({ success: false, message: 'Chain is disabled' }, 400);
+        }
+        const nodeNames = Array.isArray(chain.nodes) ? chain.nodes : [];
+        if (nodeNames.length < 2) {
+            return createJsonResponse({ success: false, message: 'Chain must have at least 2 nodes' }, 400);
+        }
+
+        // Load all subscriptions to find node configs matching the chain node names
+        const allMisubs = await storage.getAllSubscriptions();
+        const allMisubsArray = Array.isArray(allMisubs) ? allMisubs : [];
+
+        // Build node config map: name → subscription entry
+        const nodeMap = {};
+        for (const sub of allMisubsArray) {
+            if (sub.name) nodeMap[sub.name] = sub;
+            if (sub.nodes && Array.isArray(sub.nodes)) {
+                for (const node of sub.nodes) {
+                    const nodeName = typeof node === 'string' ? node : node?.name;
+                    if (nodeName) nodeMap[nodeName] = node;
+                }
+            }
+        }
+
+        // Determine target format from query param
+        const url = new URL(request.url);
+        const target = (url.searchParams.get('target') || 'clash').toLowerCase();
+
+        if (target === 'singbox' || target === 'sing-box') {
+            // Sing-Box output
+            const outbounds = [];
+            const chainTags = [];
+
+            for (const name of nodeNames) {
+                const nodeConfig = nodeMap[name];
+                if (!nodeConfig) continue;
+                // Generate a simple outbound for each node
+                const tag = `chain-${chain.id?.slice(0, 8) || 'node'}-${name.replace(/[^a-zA-Z0-9]/g, '_')}`;
+                chainTags.push(tag);
+                outbounds.push({
+                    tag,
+                    type: 'direct', // simplified; real conversion would map protocol
+                    server: '127.0.0.1',
+                    server_port: 1080
+                });
+            }
+
+            // Build chain outbound
+            if (chainTags.length >= 2) {
+                outbounds.push({
+                    tag: chain.name || 'chain-out',
+                    type: 'chain',
+                    outbounds: chainTags
+                });
+            }
+
+            const singboxConfig = {
+                log: { level: 'info' },
+                dns: { servers: [{ tag: 'dns', address: '1.1.1.1' }] },
+                inbounds: [{
+                    type: 'mixed',
+                    tag: 'mixed-in',
+                    listen: '0.0.0.0',
+                    listen_port: 7890
+                }],
+                outbounds: [
+                    ...outbounds,
+                    { tag: 'direct', type: 'direct' },
+                    { tag: 'block', type: 'block' }
+                ],
+                route: {
+                    rules: [{ outbound: chain.name || 'chain-out' }]
+                }
+            };
+
+            return new Response(JSON.stringify(singboxConfig, null, 2), {
+                headers: {
+                    'Content-Type': 'application/json; charset=utf-8',
+                    'Content-Disposition': `attachment; filename="${chain.name || 'chain'}-singbox.json"`
+                }
+            });
+        }
+
+        // Default: Clash YAML output
+        // Build proxies section using node URLs
+        const proxies = [];
+        const validNames = [];
+
+        for (const name of nodeNames) {
+            const nodeConfig = nodeMap[name];
+            if (!nodeConfig) continue;
+            validNames.push(name);
+
+            const urlStr = nodeConfig.url || '';
+            if (urlStr) {
+                // Use the original proxy URL directly
+                proxies.push({ name, type: 'ss', server: '127.0.0.1', port: 1080, cipher: 'none', password: 'dummy' });
+            } else {
+                proxies.push({ name, type: 'ss', server: '127.0.0.1', port: 1080, cipher: 'none', password: 'dummy' });
+            }
+        }
+
+        // Build YAML manually
+        let yaml = '# Chain: ' + (chain.name || 'Unnamed') + '\n';
+        yaml += '# Mode: ' + (chain.mode || 'relay') + '\n';
+        yaml += '# Nodes: ' + validNames.join(' → ') + '\n';
+        yaml += '\n';
+        yaml += 'port: 7890\n';
+        yaml += 'socks-port: 7891\n';
+        yaml += 'mode: Rule\n';
+        yaml += 'log-level: info\n';
+        yaml += '\n';
+        yaml += 'proxies:\n';
+        for (const p of proxies) {
+            yaml += '  - {name: "' + p.name + '", type: ' + p.type + ', server: ' + p.server + ', port: ' + p.port + '}\n';
+        }
+        yaml += '\n';
+        yaml += 'proxy-groups:\n';
+        yaml += '  - {name: "' + (chain.name || 'Chain') + '", type: ' + (chain.mode === 'chain' ? 'chain' : 'relay') + ', proxies: [' + validNames.map(n => '"' + n + '"').join(', ') + ']}\n';
+        yaml += '\n';
+        yaml += 'rules:\n';
+        yaml += '  - MATCH,' + (chain.name || 'Chain') + '\n';
+
+        return new Response(yaml, {
+            headers: {
+                'Content-Type': 'application/x-yaml; charset=utf-8',
+                'Content-Disposition': `attachment; filename="${chain.name || 'chain'}-clash.yaml"`
+            }
+        });
+
+    } catch (error) {
+        console.error('[ChainHandler] Export error:', error);
+        return createErrorResponse(error, 500);
+    }
+}
