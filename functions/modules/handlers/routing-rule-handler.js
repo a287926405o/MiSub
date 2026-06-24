@@ -1,20 +1,21 @@
 /**
- * Routing Rules Handler
+ * Routing Rules Handler (3x-ui style chain proxy)
  * CRUD operations for routing rules.
  *
- * In 3x-ui / Xray-core style, routing rules determine which outbound
- * traffic goes to based on various conditions:
- *   - Domain matching (full, regex, wildcard)
- *   - IP matching (CIDR, geoip)
- *   - Port matching
- *   - Protocol matching
- *   - Network type (tcp/udp)
- *   - Source IP / inbound tag
+ * In 3x-ui style, routing rules define the path traffic takes:
+ *   "Which proxy node → Which outbound"
  *
- * Each routing rule has:
- *   - A set of conditions (match any / match all)
- *   - A target outbound (direct, block, proxy node, chain, custom outbound)
- *   - An optional rule set / group for organization
+ * This creates chain proxy effects:
+ *   Traffic → Proxy Node A → Outbound WARP → Internet
+ *   Traffic → Proxy Node B → Outbound Direct → Internet
+ *
+ * Each rule has:
+ *   - A source (proxy node name, or traffic conditions like domain/IP)
+ *   - A target outbound (from outbound settings)
+ *   - Optional: conditions for traffic-based routing (domain, IP, geo, etc.)
+ *
+ * The simplest form: select a proxy node name → route to an outbound
+ * Advanced form: domain/IP matching → route to an outbound
  */
 
 import { StorageFactory } from '../../storage-adapter.js';
@@ -22,59 +23,22 @@ import { KV_KEY_ROUTING_RULES } from '../config.js';
 import { createJsonResponse, createErrorResponse, readJsonWithLimit, JSON_BODY_LIMITS } from '../utils.js';
 import { authMiddleware } from '../auth-middleware.js';
 
-/** Supported match fields for routing rules */
-export const RULE_FIELDS = [
-    'domain',          // Domain match (full)
-    'domain_suffix',   // Domain suffix match
-    'domain_keyword',  // Domain contains keyword
-    'domain_regex',    // Domain regex match
-    'ip_cidr',         // Destination IP CIDR
-    'ip_cidr_src',     // Source IP CIDR
-    'port',            // Destination port
-    'port_src',        // Source port
-    'protocol',        // Protocol (http, tls, etc.)
-    'network',         // Network type (tcp, udp)
-    'source',          // Source inbound tag
-    'geoip',           // GeoIP country code
-    'geosite',         // GeoSite category
-    'process_name',    // Process name (OS only)
-    'package_name',    // Android package name
-    'match_type'       // Match type: and/or
-];
-
-/** Match operators per field type */
-const FIELD_OPERATORS = {
-    domain: ['eq', 'suffix', 'keyword', 'regex'],
-    domain_suffix: ['eq', 'suffix'],
-    domain_keyword: ['eq', 'keyword'],
-    domain_regex: ['eq', 'regex'],
-    ip_cidr: ['in', 'not_in'],
-    ip_cidr_src: ['in', 'not_in'],
-    port: ['eq', 'range', 'in', 'not_in'],
-    port_src: ['eq', 'range', 'in', 'not_in'],
-    protocol: ['eq', 'in', 'not_in'],
-    network: ['eq'],
-    source: ['eq'],
-    geoip: ['in', 'not_in'],
-    geosite: ['in', 'not_in'],
-    process_name: ['eq', 'keyword'],
-    package_name: ['eq'],
-    match_type: ['eq']
-};
-
-/** Valid target types for routing rules */
-export const RULE_TARGET_TYPES = [
-    'direct',      // Route directly
-    'block',       // Block traffic
-    'dns',         // Route to DNS
-    'proxy',       // Route to a specific proxy node
-    'outbound',    // Route to a custom outbound (by ID or name)
-    'chain',       // Route to a chain proxy
-    'proxy_group'  // Route to a proxy group in the generated config
+/** Routing rule source types */
+export const RULE_SOURCE_TYPES = [
+    'node',        // Route a specific proxy node by name → outbound
+    'domain',      // Domain match → outbound
+    'domain_suffix', // Domain suffix → outbound
+    'domain_keyword', // Domain keyword → outbound
+    'ip_cidr',     // IP CIDR → outbound
+    'geoip',       // GeoIP country → outbound
+    'geosite',     // GeoSite category → outbound
+    'port',        // Destination port → outbound
+    'protocol',    // Protocol → outbound
+    'all'          // All remaining traffic → outbound (catch-all)
 ];
 
 /**
- * Normalize a routing rule object.
+ * Normalize a routing rule.
  */
 function normalizeRoutingRule(rule = {}) {
     return {
@@ -82,51 +46,16 @@ function normalizeRoutingRule(rule = {}) {
         name: rule.name || '',
         description: rule.description || '',
         enabled: rule.enabled !== false,
-        // Match logic
-        matchMode: rule.matchMode || 'any', // 'any' | 'all'
-        conditions: Array.isArray(rule.conditions) ? rule.conditions : [],
-        // Route target
-        targetType: rule.targetType || 'direct',
-        target: rule.target || '', // Outbound name, node name, chain name, etc.
-        // Advanced: rule sets / grouping
-        ruleSetId: rule.ruleSetId || '',
-        // Metadata
+        // Source: which node or traffic condition
+        sourceType: rule.sourceType || 'node',
+        sourceValue: rule.sourceValue || '',
+        // Target: which outbound to use
+        targetOutbound: rule.targetOutbound || '', // Outbound ID or name
+        // Priority (higher = evaluated first)
         priority: rule.priority || 0,
         createdAt: rule.createdAt || new Date().toISOString(),
         updatedAt: rule.updatedAt || new Date().toISOString()
     };
-}
-
-/**
- * Normalize a condition entry.
- */
-function normalizeCondition(cond = {}) {
-    return {
-        field: cond.field || 'domain',
-        operator: cond.operator || 'eq',
-        value: cond.value || '',
-        invert: cond.invert === true
-    };
-}
-
-/**
- * Validate a single condition.
- */
-function validateCondition(cond) {
-    const errors = [];
-    if (!cond.field || !RULE_FIELDS.includes(cond.field)) {
-        errors.push(`Invalid field: ${cond.field}. Must be one of: ${RULE_FIELDS.join(', ')}`);
-    }
-    if (cond.field !== 'match_type') {
-        const validOps = FIELD_OPERATORS[cond.field] || ['eq'];
-        if (!cond.operator || !validOps.includes(cond.operator)) {
-            errors.push(`Invalid operator "${cond.operator}" for field "${cond.field}". Valid: ${validOps.join(', ')}`);
-        }
-    }
-    if (!cond.value || (typeof cond.value === 'string' && !cond.value.trim())) {
-        errors.push('Condition value is required');
-    }
-    return errors;
 }
 
 /**
@@ -137,19 +66,14 @@ function validateRoutingRule(rule) {
     if (!rule.name || typeof rule.name !== 'string' || !rule.name.trim()) {
         errors.push('Rule name is required');
     }
-    if (!Array.isArray(rule.conditions) || rule.conditions.length === 0) {
-        errors.push('At least one condition is required');
-    } else {
-        rule.conditions.forEach((cond, i) => {
-            const condErrors = validateCondition(normalizeCondition(cond));
-            condErrors.forEach(e => errors.push(`Condition[${i}]: ${e}`));
-        });
+    if (!rule.sourceType || !RULE_SOURCE_TYPES.includes(rule.sourceType)) {
+        errors.push(`Source type must be one of: ${RULE_SOURCE_TYPES.join(', ')}`);
     }
-    if (!rule.targetType || !RULE_TARGET_TYPES.includes(rule.targetType)) {
-        errors.push(`Target type must be one of: ${RULE_TARGET_TYPES.join(', ')}`);
+    if (rule.sourceType !== 'all' && !rule.sourceValue) {
+        errors.push('Source value is required for this source type');
     }
-    if (rule.matchMode && !['any', 'all'].includes(rule.matchMode)) {
-        errors.push('Match mode must be "any" or "all"');
+    if (!rule.targetOutbound) {
+        errors.push('Target outbound is required');
     }
     return errors;
 }
@@ -163,12 +87,10 @@ export async function handleRoutingRulesList(request, env) {
     }
     try {
         const storage = StorageFactory.resolveKV(env);
-        if (!storage) {
-            return createJsonResponse({ success: false, message: 'Storage not available' }, 500);
-        }
+        if (!storage) return createJsonResponse({ success: false, message: 'Storage not available' }, 500);
         const raw = await storage.get(KV_KEY_ROUTING_RULES);
         const rules = raw ? JSON.parse(raw) : [];
-        // Sort by priority descending by default
+        // Sort by priority descending
         rules.sort((a, b) => (b.priority || 0) - (a.priority || 0));
         return createJsonResponse({ success: true, data: rules });
     } catch (error) {
@@ -186,9 +108,7 @@ export async function handleRoutingRuleCreate(request, env) {
     }
     try {
         const body = await readJsonWithLimit(request, JSON_BODY_LIMITS.DEFAULT);
-        if (!body) {
-            return createJsonResponse({ success: false, message: 'Invalid JSON body' }, 400);
-        }
+        if (!body) return createJsonResponse({ success: false, message: 'Invalid JSON body' }, 400);
 
         const errors = validateRoutingRule(body);
         if (errors.length > 0) {
@@ -196,9 +116,7 @@ export async function handleRoutingRuleCreate(request, env) {
         }
 
         const storage = StorageFactory.resolveKV(env);
-        if (!storage) {
-            return createJsonResponse({ success: false, message: 'Storage not available' }, 500);
-        }
+        if (!storage) return createJsonResponse({ success: false, message: 'Storage not available' }, 500);
 
         const raw = await storage.get(KV_KEY_ROUTING_RULES);
         const rules = raw ? JSON.parse(raw) : [];
@@ -227,27 +145,19 @@ export async function handleRoutingRuleUpdate(request, env, ruleId) {
     if (!await authMiddleware(request, env)) {
         return createJsonResponse({ error: 'Unauthorized' }, 401);
     }
-    if (!ruleId) {
-        return createJsonResponse({ success: false, message: 'Rule ID is required' }, 400);
-    }
+    if (!ruleId) return createJsonResponse({ success: false, message: 'Rule ID is required' }, 400);
     try {
         const body = await readJsonWithLimit(request, JSON_BODY_LIMITS.DEFAULT);
-        if (!body) {
-            return createJsonResponse({ success: false, message: 'Invalid JSON body' }, 400);
-        }
+        if (!body) return createJsonResponse({ success: false, message: 'Invalid JSON body' }, 400);
 
         const storage = StorageFactory.resolveKV(env);
-        if (!storage) {
-            return createJsonResponse({ success: false, message: 'Storage not available' }, 500);
-        }
+        if (!storage) return createJsonResponse({ success: false, message: 'Storage not available' }, 500);
 
         const raw = await storage.get(KV_KEY_ROUTING_RULES);
         const rules = raw ? JSON.parse(raw) : [];
         const index = rules.findIndex(r => r.id === ruleId);
 
-        if (index === -1) {
-            return createJsonResponse({ success: false, message: 'Routing rule not found' }, 404);
-        }
+        if (index === -1) return createJsonResponse({ success: false, message: 'Routing rule not found' }, 404);
 
         const updated = { ...rules[index], ...body, id: ruleId, updatedAt: new Date().toISOString() };
         const errors = validateRoutingRule(updated);
@@ -272,22 +182,16 @@ export async function handleRoutingRuleDelete(request, env, ruleId) {
     if (!await authMiddleware(request, env)) {
         return createJsonResponse({ error: 'Unauthorized' }, 401);
     }
-    if (!ruleId) {
-        return createJsonResponse({ success: false, message: 'Rule ID is required' }, 400);
-    }
+    if (!ruleId) return createJsonResponse({ success: false, message: 'Rule ID is required' }, 400);
     try {
         const storage = StorageFactory.resolveKV(env);
-        if (!storage) {
-            return createJsonResponse({ success: false, message: 'Storage not available' }, 500);
-        }
+        if (!storage) return createJsonResponse({ success: false, message: 'Storage not available' }, 500);
 
         const raw = await storage.get(KV_KEY_ROUTING_RULES);
         const rules = raw ? JSON.parse(raw) : [];
         const index = rules.findIndex(r => r.id === ruleId);
 
-        if (index === -1) {
-            return createJsonResponse({ success: false, message: 'Routing rule not found' }, 404);
-        }
+        if (index === -1) return createJsonResponse({ success: false, message: 'Routing rule not found' }, 404);
 
         rules.splice(index, 1);
         await storage.put(KV_KEY_ROUTING_RULES, JSON.stringify(rules));
@@ -308,7 +212,5 @@ export async function getRoutingRulesData(env) {
         if (!storage) return [];
         const raw = await storage.get(KV_KEY_ROUTING_RULES);
         return raw ? JSON.parse(raw) : [];
-    } catch {
-        return [];
-    }
+    } catch { return []; }
 }

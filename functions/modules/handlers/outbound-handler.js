@@ -1,17 +1,16 @@
 /**
- * Outbound Settings Handler
- * CRUD operations for custom outbound configurations.
+ * Outbound Settings Handler (3x-ui style)
+ * CRUD operations for outbound node configurations.
  *
- * In 3x-ui / Xray-core style, outbounds define where traffic can be routed:
- *   - direct / freedom: direct connection
- *   - block: block traffic
- *   - dns: DNS outbound
- *   - proxy: forward to a specific proxy node
- *   - load_balance: distribute across multiple nodes
- *   - wireguard: WireGuard outbound
- *   - chain: chain proxy (existing feature integration)
+ * In 3x-ui / Xray-core, outbounds define the actual server connections
+ * that traffic gets routed TO. This includes:
+ *   - Proxy protocols: Shadowsocks, VMess, Trojan, VLESS, Hysteria2
+ *   - Tunnels: SOCKS5, HTTP, WireGuard
+ *   - Special: Direct (freedom), Block (reject)
  *
- * These outbounds are then referenced by routing rules.
+ * These outbounds can be used as the "next hop" in routing rules,
+ * creating chain proxy effects when a proxy node routes through
+ * another outbound.
  */
 
 import { StorageFactory } from '../../storage-adapter.js';
@@ -19,47 +18,151 @@ import { KV_KEY_OUTBOUNDS } from '../config.js';
 import { createJsonResponse, createErrorResponse, readJsonWithLimit, JSON_BODY_LIMITS } from '../utils.js';
 import { authMiddleware } from '../auth-middleware.js';
 
-/** Supported outbound types */
-export const OUTBOUND_TYPES = [
-    'direct',       // Direct connection (freedom)
-    'block',        // Block traffic (reject)
-    'dns',          // DNS outbound
-    'proxy',        // Forward to a specific proxy node
-    'load_balance', // Load balance across multiple nodes
-    'chain',        // Chain proxy (reference an existing chain)
-    'wireguard',    // WireGuard outbound
-    'custom'        // Custom JSON config passthrough
+/** Supported outbound protocol types */
+export const OUTBOUND_PROTOCOLS = [
+    'shadowsocks',  // SS: server, port, method, password, plugin
+    'vmess',        // VMess: server, port, uuid, alterId, cipher, network, tls
+    'trojan',       // Trojan: server, port, password, sni, skip-cert-verify
+    'vless',        // VLESS: server, port, uuid, flow, network, reality/tls
+    'hysteria2',    // Hysteria2: server, port, password, sni, up/down
+    'socks5',       // SOCKS5: server, port, username, password, udp
+    'http',         // HTTP: server, port, username, password, tls
+    'wireguard',    // WireGuard: server, port, public_key, private_key, addresses
+    'direct',       // Direct (freedom): no config needed
+    'block'         // Block (reject): no config needed
 ];
 
-/** Load balance strategies */
-const LB_STRATEGIES = ['random', 'round_robin', 'least_ping', 'least_load', 'consistent_hashing'];
+/** Protocol display names */
+export const PROTOCOL_LABELS = {
+    shadowsocks: 'Shadowsocks',
+    vmess: 'VMess',
+    trojan: 'Trojan',
+    vless: 'VLESS',
+    hysteria2: 'Hysteria2',
+    socks5: 'SOCKS5',
+    http: 'HTTP',
+    wireguard: 'WireGuard',
+    direct: 'Direct (直连)',
+    block: 'Block (拒绝)'
+};
 
 /**
  * Normalize an outbound object with defaults.
  */
 function normalizeOutbound(outbound = {}) {
-    return {
+    const base = {
         id: outbound.id || '',
         name: outbound.name || '',
-        type: outbound.type || 'direct',
+        protocol: outbound.protocol || 'shadowsocks',
         enabled: outbound.enabled !== false,
         description: outbound.description || '',
-        // Settings per type
-        config: outbound.config || {},
-        // Load balance specific
-        targets: Array.isArray(outbound.targets) ? outbound.targets : [],
-        strategy: outbound.strategy || 'random',
-        // Proxy specific
-        proxyNode: outbound.proxyNode || '',
-        // Chain reference
-        chainId: outbound.chainId || '',
-        // WireGuard specific
-        wireguardConfig: outbound.wireguardConfig || {},
-        // Custom JSON
-        customConfig: outbound.customConfig || '',
         createdAt: outbound.createdAt || new Date().toISOString(),
         updatedAt: outbound.updatedAt || new Date().toISOString()
     };
+
+    // Protocol-specific config
+    switch (outbound.protocol) {
+        case 'shadowsocks':
+            return {
+                ...base,
+                server: outbound.server || '',
+                port: outbound.port || 443,
+                method: outbound.method || 'aes-128-gcm',
+                password: outbound.password || '',
+                plugin: outbound.plugin || '',
+                pluginOpts: outbound.pluginOpts || ''
+            };
+        case 'vmess':
+            return {
+                ...base,
+                server: outbound.server || '',
+                port: outbound.port || 443,
+                uuid: outbound.uuid || '',
+                alterId: outbound.alterId || 0,
+                cipher: outbound.cipher || 'auto',
+                network: outbound.network || 'tcp', // tcp, ws, grpc
+                tls: outbound.tls !== false,
+                sni: outbound.sni || '',
+                skipCertVerify: outbound.skipCertVerify === true,
+                wsPath: outbound.wsPath || '/',
+                wsHost: outbound.wsHost || ''
+            };
+        case 'trojan':
+            return {
+                ...base,
+                server: outbound.server || '',
+                port: outbound.port || 443,
+                password: outbound.password || '',
+                sni: outbound.sni || '',
+                skipCertVerify: outbound.skipCertVerify === true,
+                udp: outbound.udp !== false
+            };
+        case 'vless':
+            return {
+                ...base,
+                server: outbound.server || '',
+                port: outbound.port || 443,
+                uuid: outbound.uuid || '',
+                flow: outbound.flow || '',
+                network: outbound.network || 'tcp',
+                tls: outbound.tls !== false,
+                sni: outbound.sni || '',
+                skipCertVerify: outbound.skipCertVerify === true,
+                reality: outbound.reality === true,
+                realityPublicKey: outbound.realityPublicKey || '',
+                realityShortId: outbound.realityShortId || '',
+                realityServerName: outbound.realityServerName || ''
+            };
+        case 'hysteria2':
+            return {
+                ...base,
+                server: outbound.server || '',
+                port: outbound.port || 443,
+                password: outbound.password || '',
+                sni: outbound.sni || '',
+                skipCertVerify: outbound.skipCertVerify === true,
+                upMbps: outbound.upMbps || 100,
+                downMbps: outbound.downMbps || 100
+            };
+        case 'socks5':
+            return {
+                ...base,
+                server: outbound.server || '',
+                port: outbound.port || 1080,
+                username: outbound.username || '',
+                password: outbound.password || '',
+                udp: outbound.udp === true
+            };
+        case 'http':
+            return {
+                ...base,
+                server: outbound.server || '',
+                port: outbound.port || 8080,
+                username: outbound.username || '',
+                password: outbound.password || '',
+                tls: outbound.tls === true
+            };
+        case 'wireguard':
+            return {
+                ...base,
+                server: outbound.server || '',
+                port: outbound.port || 51820,
+                privateKey: outbound.privateKey || '',
+                publicKey: outbound.publicKey || '',
+                localAddress: outbound.localAddress || '',
+                mtu: outbound.mtu || 1420,
+                reserved: outbound.reserved || ''
+            };
+        case 'direct':
+        case 'block':
+            return {
+                ...base,
+                server: '',
+                port: 0
+            };
+        default:
+            return base;
+    }
 }
 
 /**
@@ -70,23 +173,40 @@ function validateOutbound(outbound) {
     if (!outbound.name || typeof outbound.name !== 'string' || !outbound.name.trim()) {
         errors.push('Outbound name is required');
     }
-    if (!outbound.type || !OUTBOUND_TYPES.includes(outbound.type)) {
-        errors.push(`Type must be one of: ${OUTBOUND_TYPES.join(', ')}`);
+    if (!outbound.protocol || !OUTBOUND_PROTOCOLS.includes(outbound.protocol)) {
+        errors.push(`Protocol must be one of: ${OUTBOUND_PROTOCOLS.join(', ')}`);
     }
-    if (outbound.type === 'load_balance') {
-        if (!Array.isArray(outbound.targets) || outbound.targets.length < 2) {
-            errors.push('Load balance outbound requires at least 2 targets');
-        }
-        if (outbound.strategy && !LB_STRATEGIES.includes(outbound.strategy)) {
-            errors.push(`Strategy must be one of: ${LB_STRATEGIES.join(', ')}`);
-        }
+
+    // For protocols that require server/port
+    if (!['direct', 'block'].includes(outbound.protocol)) {
+        if (!outbound.server) errors.push('Server address is required');
+        if (!outbound.port) errors.push('Port is required');
     }
-    if (outbound.type === 'proxy' && !outbound.proxyNode) {
-        errors.push('Proxy outbound requires a target proxy node');
+
+    // Protocol-specific field validation
+    switch (outbound.protocol) {
+        case 'shadowsocks':
+            if (!outbound.password) errors.push('Password is required for Shadowsocks');
+            break;
+        case 'vmess':
+            if (!outbound.uuid) errors.push('UUID is required for VMess');
+            break;
+        case 'trojan':
+            if (!outbound.password) errors.push('Password is required for Trojan');
+            break;
+        case 'vless':
+            if (!outbound.uuid) errors.push('UUID is required for VLESS');
+            break;
+        case 'hysteria2':
+            if (!outbound.password) errors.push('Password is required for Hysteria2');
+            break;
+        case 'wireguard':
+            if (!outbound.privateKey) errors.push('Private key is required for WireGuard');
+            if (!outbound.publicKey) errors.push('Public key is required for WireGuard');
+            if (!outbound.localAddress) errors.push('Local address is required for WireGuard');
+            break;
     }
-    if (outbound.type === 'chain' && !outbound.chainId) {
-        errors.push('Chain outbound requires a chain ID reference');
-    }
+
     return errors;
 }
 
@@ -99,9 +219,7 @@ export async function handleOutboundsList(request, env) {
     }
     try {
         const storage = StorageFactory.resolveKV(env);
-        if (!storage) {
-            return createJsonResponse({ success: false, message: 'Storage not available' }, 500);
-        }
+        if (!storage) return createJsonResponse({ success: false, message: 'Storage not available' }, 500);
         const raw = await storage.get(KV_KEY_OUTBOUNDS);
         const outbounds = raw ? JSON.parse(raw) : [];
         return createJsonResponse({ success: true, data: outbounds });
@@ -120,9 +238,7 @@ export async function handleOutboundCreate(request, env) {
     }
     try {
         const body = await readJsonWithLimit(request, JSON_BODY_LIMITS.DEFAULT);
-        if (!body) {
-            return createJsonResponse({ success: false, message: 'Invalid JSON body' }, 400);
-        }
+        if (!body) return createJsonResponse({ success: false, message: 'Invalid JSON body' }, 400);
 
         const errors = validateOutbound(body);
         if (errors.length > 0) {
@@ -130,14 +246,12 @@ export async function handleOutboundCreate(request, env) {
         }
 
         const storage = StorageFactory.resolveKV(env);
-        if (!storage) {
-            return createJsonResponse({ success: false, message: 'Storage not available' }, 500);
-        }
+        if (!storage) return createJsonResponse({ success: false, message: 'Storage not available' }, 500);
 
         const raw = await storage.get(KV_KEY_OUTBOUNDS);
         const outbounds = raw ? JSON.parse(raw) : [];
 
-        // Check for duplicate name
+        // Check duplicate name
         if (outbounds.some(o => o.name === body.name.trim())) {
             return createJsonResponse({ success: false, message: 'An outbound with this name already exists' }, 409);
         }
@@ -166,29 +280,21 @@ export async function handleOutboundUpdate(request, env, outboundId) {
     if (!await authMiddleware(request, env)) {
         return createJsonResponse({ error: 'Unauthorized' }, 401);
     }
-    if (!outboundId) {
-        return createJsonResponse({ success: false, message: 'Outbound ID is required' }, 400);
-    }
+    if (!outboundId) return createJsonResponse({ success: false, message: 'Outbound ID is required' }, 400);
     try {
         const body = await readJsonWithLimit(request, JSON_BODY_LIMITS.DEFAULT);
-        if (!body) {
-            return createJsonResponse({ success: false, message: 'Invalid JSON body' }, 400);
-        }
+        if (!body) return createJsonResponse({ success: false, message: 'Invalid JSON body' }, 400);
 
         const storage = StorageFactory.resolveKV(env);
-        if (!storage) {
-            return createJsonResponse({ success: false, message: 'Storage not available' }, 500);
-        }
+        if (!storage) return createJsonResponse({ success: false, message: 'Storage not available' }, 500);
 
         const raw = await storage.get(KV_KEY_OUTBOUNDS);
         const outbounds = raw ? JSON.parse(raw) : [];
         const index = outbounds.findIndex(o => o.id === outboundId);
 
-        if (index === -1) {
-            return createJsonResponse({ success: false, message: 'Outbound not found' }, 404);
-        }
+        if (index === -1) return createJsonResponse({ success: false, message: 'Outbound not found' }, 404);
 
-        // Check name uniqueness (exclude current)
+        // Check name uniqueness
         const newName = body.name ? body.name.trim() : outbounds[index].name;
         if (outbounds.some((o, i) => i !== index && o.name === newName)) {
             return createJsonResponse({ success: false, message: 'An outbound with this name already exists' }, 409);
@@ -217,21 +323,27 @@ export async function handleOutboundDelete(request, env, outboundId) {
     if (!await authMiddleware(request, env)) {
         return createJsonResponse({ error: 'Unauthorized' }, 401);
     }
-    if (!outboundId) {
-        return createJsonResponse({ success: false, message: 'Outbound ID is required' }, 400);
-    }
+    if (!outboundId) return createJsonResponse({ success: false, message: 'Outbound ID is required' }, 400);
     try {
         const storage = StorageFactory.resolveKV(env);
-        if (!storage) {
-            return createJsonResponse({ success: false, message: 'Storage not available' }, 500);
-        }
+        if (!storage) return createJsonResponse({ success: false, message: 'Storage not available' }, 500);
 
         const raw = await storage.get(KV_KEY_OUTBOUNDS);
         const outbounds = raw ? JSON.parse(raw) : [];
         const index = outbounds.findIndex(o => o.id === outboundId);
 
-        if (index === -1) {
-            return createJsonResponse({ success: false, message: 'Outbound not found' }, 404);
+        if (index === -1) return createJsonResponse({ success: false, message: 'Outbound not found' }, 404);
+
+        // Check if outbound is referenced by any routing rules
+        const rawRules = await storage.get('misub_routing_rules_v1');
+        const rules = rawRules ? JSON.parse(rawRules) : [];
+        const referencedBy = rules.filter(r => r.targetOutbound === outboundId || r.targetOutbound === outbounds[index].name);
+        if (referencedBy.length > 0) {
+            return createJsonResponse({
+                success: false,
+                message: `Cannot delete: outbound is referenced by ${referencedBy.length} routing rule(s)`,
+                references: referencedBy.map(r => r.name)
+            }, 409);
         }
 
         outbounds.splice(index, 1);
@@ -245,7 +357,7 @@ export async function handleOutboundDelete(request, env, outboundId) {
 }
 
 /**
- * Helper: get all outbounds as array (used by other modules).
+ * Helper: get all outbounds as array.
  */
 export async function getOutboundsData(env) {
     try {
@@ -253,7 +365,5 @@ export async function getOutboundsData(env) {
         if (!storage) return [];
         const raw = await storage.get(KV_KEY_OUTBOUNDS);
         return raw ? JSON.parse(raw) : [];
-    } catch {
-        return [];
-    }
+    } catch { return []; }
 }

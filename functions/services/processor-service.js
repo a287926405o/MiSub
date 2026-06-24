@@ -20,12 +20,11 @@ import {
     formatChainIniSection
 } from './chain-proxy-service.js';
 import {
-    buildClashRules,
-    buildSingboxRoutingRules,
-    buildSurgeRules,
-    buildLoonRules,
-    buildSingboxCustomOutbounds,
-    buildClashCustomProxyGroups
+    outboundToClashProxy,
+    outboundToSingboxOutbound,
+    outboundToSurgeProxy,
+    applyClashRouting,
+    applySingboxRouting
 } from './routing-service.js';
 
 function getTemplateExtension(templateUrl) {
@@ -335,7 +334,8 @@ export class ProcessorService {
         }
 
         // ===== Custom Outbound & Routing Rule Injection (3x-ui style) =====
-        // Inject custom outbound configs and routing rules into the generated output
+        // Inject custom outbound configs and apply routing rules
+        // to create chain proxy effects: Proxy Node → Outbound → Internet
         if (finalContent) {
             const activeOutbounds = Array.isArray(outbounds) ? outbounds.filter(o => o.enabled) : [];
             const activeRules = Array.isArray(routingRules) ? routingRules.filter(r => r.enabled) : [];
@@ -349,34 +349,57 @@ export class ProcessorService {
                                 ? clashConfig.proxies.map(p => p.name).filter(Boolean)
                                 : [];
 
-                            // Inject custom proxy-groups from outbound settings (load-balance, chain)
-                            const customGroups = buildClashCustomProxyGroups(activeOutbounds);
-                            if (customGroups.length > 0) {
+                            // 1. Inject outbound configs as Clash proxies
+                            const newProxies = [];
+                            for (const ob of activeOutbounds) {
+                                const proxyEntry = outboundToClashProxy(ob);
+                                if (proxyEntry) {
+                                    // Avoid name conflicts
+                                    if (!proxyNames.includes(proxyEntry.name)) {
+                                        newProxies.push(proxyEntry);
+                                    }
+                                }
+                            }
+                            if (newProxies.length > 0) {
+                                clashConfig.proxies = [
+                                    ...(Array.isArray(clashConfig.proxies) ? clashConfig.proxies : []),
+                                    ...newProxies
+                                ];
+                                headers['X-MiSub-Outbounds-Injected'] = String(newProxies.length);
+                            }
+
+                            // 2. Apply routing rules → create relay groups
+                            const allNames = [
+                                ...proxyNames,
+                                ...newProxies.map(p => p.name)
+                            ];
+                            const { proxyGroups: routeGroups, rules: routeRules } = applyClashRouting(activeRules, activeOutbounds, allNames);
+
+                            // Add route-based proxy groups
+                            if (routeGroups.length > 0) {
                                 clashConfig['proxy-groups'] = [
                                     ...(Array.isArray(clashConfig['proxy-groups']) ? clashConfig['proxy-groups'] : []),
-                                    ...customGroups
+                                    ...routeGroups
                                 ];
                             }
 
-                            // Inject routing rules
-                            const routingRulesArr = buildClashRules(activeRules, activeOutbounds, chains, proxyNames);
-                            if (routingRulesArr.length > 0) {
+                            // Add traffic-based rules
+                            if (routeRules.length > 0) {
                                 const existingRules = Array.isArray(clashConfig.rules) ? clashConfig.rules : [];
-                                // Insert custom rules before the last MATCH rule (if any)
                                 const matchIndex = existingRules.findIndex(r => r.startsWith('MATCH,'));
                                 if (matchIndex !== -1) {
                                     clashConfig.rules = [
                                         ...existingRules.slice(0, matchIndex),
-                                        ...routingRulesArr,
+                                        ...routeRules,
                                         ...existingRules.slice(matchIndex)
                                     ];
                                 } else {
                                     clashConfig.rules = [
-                                        ...routingRulesArr,
+                                        ...routeRules,
                                         ...existingRules
                                     ];
                                 }
-                                headers['X-MiSub-Routing-Injected'] = String(routingRulesArr.length);
+                                headers['X-MiSub-Routing-Injected'] = String(routeRules.length);
                             }
 
                             finalContent = yaml.dump(clashConfig, {
@@ -390,59 +413,97 @@ export class ProcessorService {
                     } else if (targetFormat === 'singbox' || targetFormat === 'sing-box') {
                         const singboxConfig = JSON.parse(finalContent);
                         if (singboxConfig && typeof singboxConfig === 'object') {
-                            const outboundTags = Array.isArray(singboxConfig.outbounds)
+                            const existingTags = Array.isArray(singboxConfig.outbounds)
                                 ? singboxConfig.outbounds.map(o => o.tag).filter(Boolean)
                                 : [];
 
-                            // Inject custom outbounds
-                            const customOutbounds = buildSingboxCustomOutbounds(activeOutbounds);
-                            if (customOutbounds.length > 0) {
+                            // 1. Inject outbound configs as Sing-Box outbounds
+                            const newOutbounds = [];
+                            for (const ob of activeOutbounds) {
+                                const sbOutbound = outboundToSingboxOutbound(ob);
+                                if (sbOutbound && !existingTags.includes(sbOutbound.tag)) {
+                                    newOutbounds.push(sbOutbound);
+                                }
+                            }
+                            if (newOutbounds.length > 0) {
                                 singboxConfig.outbounds = [
                                     ...(Array.isArray(singboxConfig.outbounds) ? singboxConfig.outbounds : []),
-                                    ...customOutbounds
+                                    ...newOutbounds
                                 ];
+                                headers['X-MiSub-Outbounds-Injected'] = String(newOutbounds.length);
                             }
 
-                            // Inject routing rules
-                            const routingRulesArr = buildSingboxRoutingRules(activeRules, activeOutbounds, chains, outboundTags);
-                            if (routingRulesArr.length > 0) {
+                            // 2. Apply routing rules
+                            const allTags = [...existingTags, ...newOutbounds.map(o => o.tag)];
+                            const { routeRules } = applySingboxRouting(activeRules, activeOutbounds, allTags);
+
+                            if (routeRules.length > 0) {
                                 if (!singboxConfig.route) {
                                     singboxConfig.route = {};
                                 }
                                 singboxConfig.route.rules = [
-                                    ...routingRulesArr,
+                                    ...routeRules,
                                     ...(Array.isArray(singboxConfig.route?.rules) ? singboxConfig.route.rules : [])
                                 ];
-                                headers['X-MiSub-Routing-Injected'] = String(routingRulesArr.length);
+                                headers['X-MiSub-Routing-Injected'] = String(routeRules.length);
                             }
 
                             finalContent = JSON.stringify(singboxConfig, null, 2);
                         }
                     } else if (targetFormat === 'surge') {
-                        // Inject custom rules for Surge (similar to Clash)
+                        // Inject outbound proxies and routing rules for Surge
+                        const proxyLines = [];
+                        for (const ob of activeOutbounds) {
+                            const line = outboundToSurgeProxy(ob);
+                            if (line) proxyLines.push(line);
+                        }
+                        if (proxyLines.length > 0) {
+                            const proxySection = '\n' + proxyLines.join('\n');
+                            if (finalContent.includes('[Proxy]')) {
+                                finalContent = finalContent.replace(/(\[Proxy\])/, `$1${proxySection}`);
+                            } else {
+                                finalContent += `\n[Proxy]${proxySection}\n`;
+                            }
+                            headers['X-MiSub-Outbounds-Injected'] = String(proxyLines.length);
+                        }
+
+                        // Apply traffic-based routing rules
                         const proxyNames = extractProxyNamesFromSurge(finalContent);
-                        const routingRulesArr = buildSurgeRules(activeRules, activeOutbounds, chains, proxyNames);
-                        if (routingRulesArr.length > 0) {
-                            const ruleSection = '\n' + routingRulesArr.join('\n');
+                        const { rules: routeRules } = applyClashRouting(activeRules, activeOutbounds, proxyNames);
+                        if (routeRules.length > 0) {
+                            const ruleSection = '\n' + routeRules.join('\n');
                             if (finalContent.includes('[Rule]')) {
                                 finalContent = finalContent.replace(/(\[Rule\])/, `$1${ruleSection}`);
                             } else {
                                 finalContent += `\n[Rule]${ruleSection}\n`;
                             }
-                            headers['X-MiSub-Routing-Injected'] = String(routingRulesArr.length);
+                            headers['X-MiSub-Routing-Injected'] = String(routeRules.length);
                         }
                     } else if (targetFormat === 'loon') {
-                        // Inject custom rules for Loon (similar to Clash)
+                        // Similar to Surge for Loon
+                        const proxyLines = [];
+                        for (const ob of activeOutbounds) {
+                            const line = outboundToSurgeProxy(ob);
+                            if (line) proxyLines.push(line);
+                        }
+                        if (proxyLines.length > 0) {
+                            const proxySection = '\n' + proxyLines.join('\n');
+                            if (finalContent.includes('[Proxy]')) {
+                                finalContent = finalContent.replace(/(\[Proxy\])/, `$1${proxySection}`);
+                            } else {
+                                finalContent += `\n[Proxy]${proxySection}\n`;
+                            }
+                        }
+
                         const proxyNames = extractProxyNamesFromSurge(finalContent);
-                        const routingRulesArr = buildLoonRules(activeRules, activeOutbounds, chains, proxyNames);
-                        if (routingRulesArr.length > 0) {
-                            const ruleSection = '\n' + routingRulesArr.join('\n');
+                        const { rules: routeRules } = applyClashRouting(activeRules, activeOutbounds, proxyNames);
+                        if (routeRules.length > 0) {
+                            const ruleSection = '\n' + routeRules.join('\n');
                             if (finalContent.includes('[Rule]')) {
                                 finalContent = finalContent.replace(/(\[Rule\])/, `$1${ruleSection}`);
                             } else {
                                 finalContent += `\n[Rule]${ruleSection}\n`;
                             }
-                            headers['X-MiSub-Routing-Injected'] = String(routingRulesArr.length);
                         }
                     }
                 } catch (routingError) {

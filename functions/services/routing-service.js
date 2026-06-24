@@ -1,456 +1,494 @@
 /**
  * Routing Service
- * Generates routing rule configurations for various proxy clients.
+ * Converts outbound settings and routing rules into proxy client configurations.
  *
- * This service takes the user-defined routing rules and outbound settings,
- * then generates the appropriate routing configuration for:
- *   - Clash/Mihomo: rules section
- *   - Sing-Box: route section
- *   - Surge: rules section
- *   - Loon: rules section
+ * Architecture (3x-ui style chain proxy):
+ *   1. Outbound Settings define "exit nodes" (proxy servers to connect TO)
+ *   2. Routing Rules map "proxy nodes → outbounds" creating chain effects
+ *   3. Chain effect: Traffic → Subscription Node A → Outbound WARP → Internet
  *
- * The rules allow traffic to be directed to specific outbounds based on
- * domain, IP, port, protocol, geo-location, etc. - enabling chain proxy
- * effects through intelligent traffic routing.
+ * This service generates the actual proxy config entries for:
+ *   - Clash/Mihomo: proxies + proxy-groups
+ *   - Sing-Box: outbounds
+ *   - Surge: proxy entries
+ *   - Loon: proxy entries
  */
 
+import { PROTOCOL_LABELS } from '../modules/handlers/outbound-handler.js';
+
 /**
- * Mapping from routing rule target types to Clash proxy group names.
+ * Convert an outbound config to a Clash proxy entry.
+ * Each outbound protocol has its own config format.
+ *
+ * @param {Object} ob - Outbound config object
+ * @returns {Object|null} Clash proxy entry
  */
-function resolveClashTarget(targetType, target, customOutbounds = [], chains = [], allProxyNames = []) {
-    switch (targetType) {
+export function outboundToClashProxy(ob) {
+    if (!ob || !ob.enabled) return null;
+
+    switch (ob.protocol) {
+        case 'shadowsocks':
+            return {
+                name: ob.name,
+                type: 'ss',
+                server: ob.server,
+                port: ob.port,
+                cipher: ob.method || 'aes-128-gcm',
+                password: ob.password,
+                ...(ob.plugin ? { plugin: ob.plugin, 'plugin-opts': ob.pluginOpts ? JSON.parse(ob.pluginOpts) : {} } : {})
+            };
+        case 'vmess':
+            return {
+                name: ob.name,
+                type: 'vmess',
+                server: ob.server,
+                port: ob.port,
+                uuid: ob.uuid,
+                alterId: ob.alterId || 0,
+                cipher: ob.cipher || 'auto',
+                ...(ob.network === 'ws' ? {
+                    network: 'ws',
+                    'ws-opts': {
+                        path: ob.wsPath || '/',
+                        headers: ob.wsHost ? { Host: ob.wsHost } : {}
+                    }
+                } : { network: ob.network || 'tcp' }),
+                ...(ob.tls ? { tls: true, servername: ob.sni || ob.server, 'skip-cert-verify': ob.skipCertVerify } : {})
+            };
+        case 'trojan':
+            return {
+                name: ob.name,
+                type: 'trojan',
+                server: ob.server,
+                port: ob.port,
+                password: ob.password,
+                udp: ob.udp !== false,
+                ...(ob.sni ? { sni: ob.sni } : {}),
+                'skip-cert-verify': ob.skipCertVerify || false
+            };
+        case 'vless':
+            return {
+                name: ob.name,
+                type: 'vless',
+                server: ob.server,
+                port: ob.port,
+                uuid: ob.uuid,
+                ...(ob.flow ? { flow: ob.flow } : {}),
+                network: ob.network || 'tcp',
+                tls: ob.tls || false,
+                ...(ob.sni ? { 'servername': ob.sni } : {}),
+                'skip-cert-verify': ob.skipCertVerify || false,
+                ...(ob.reality ? {
+                    reality: true,
+                    'reality-opts': {
+                        'public-key': ob.realityPublicKey || '',
+                        'short-id': ob.realityShortId || ''
+                    }
+                } : {})
+            };
+        case 'hysteria2':
+            return {
+                name: ob.name,
+                type: 'hysteria2',
+                server: ob.server,
+                port: ob.port,
+                password: ob.password,
+                ...(ob.sni ? { sni: ob.sni } : {}),
+                'skip-cert-verify': ob.skipCertVerify || false,
+                up: `${ob.upMbps || 100} Mbps`,
+                down: `${ob.downMbps || 100} Mbps`
+            };
+        case 'socks5':
+            return {
+                name: ob.name,
+                type: 'socks5',
+                server: ob.server,
+                port: ob.port,
+                ...(ob.username ? { username: ob.username } : {}),
+                ...(ob.password ? { password: ob.password } : {}),
+                udp: ob.udp || false
+            };
+        case 'http':
+            return {
+                name: ob.name,
+                type: 'http',
+                server: ob.server,
+                port: ob.port,
+                ...(ob.username ? { username: ob.username } : {}),
+                ...(ob.password ? { password: ob.password } : {}),
+                tls: ob.tls || false
+            };
+        case 'wireguard':
+            return {
+                name: ob.name,
+                type: 'wireguard',
+                server: ob.server,
+                port: ob.port,
+                'private-key': ob.privateKey || '',
+                'public-key': ob.publicKey || '',
+                'local-address': ob.localAddress || '',
+                mtu: ob.mtu || 1420,
+                ...(ob.reserved ? { reserved: ob.reserved } : {})
+            };
         case 'direct':
-            return 'DIRECT';
+            return null; // DIRECT is built-in for Clash
         case 'block':
-            return 'REJECT';
-        case 'dns':
-            return 'DNS';
-        case 'proxy':
-            // Target is a proxy node name
-            return allProxyNames.includes(target) ? target : 'Proxy';
-        case 'outbound': {
-            // Find custom outbound by name or id
-            const ob = customOutbounds.find(o => o.id === target || o.name === target);
-            if (ob) {
-                if (ob.type === 'direct') return 'DIRECT';
-                if (ob.type === 'block') return 'REJECT';
-                if (ob.type === 'chain') return ob.name || `Chain-${ob.id?.slice(0, 8)}`;
-                return ob.name;
-            }
-            return target;
-        }
-        case 'chain': {
-            // Find chain by id or name
-            const chain = chains.find(c => c.id === target || c.name === target);
-            return chain ? chain.name : target;
-        }
-        case 'proxy_group':
-            return target || 'Proxy';
-        default:
-            return 'Proxy';
-    }
-}
-
-/**
- * Build Clash/Mihomo rules from routing rules.
- * Clash rules format: DOMAIN, DOMAIN-SUFFIX, DOMAIN-KEYWORD, DOMAIN-REGEX,
- * IP-CIDR, SRC-IP-CIDR, GEOIP, DST-PORT, SRC-PORT, PROCESS-NAME, etc.
- *
- * @param {Array} routingRules - User-defined routing rules
- * @param {Array} customOutbounds - Custom outbound definitions
- * @param {Array} chains - Chain proxy definitions
- * @param {Array} allProxyNames - All available proxy node names
- * @returns {Array} Clash rules array (sorted by priority)
- */
-export function buildClashRules(routingRules = [], customOutbounds = [], chains = [], allProxyNames = []) {
-    if (!Array.isArray(routingRules) || routingRules.length === 0) return [];
-
-    const rules = [];
-
-    // Sort by priority (descending, higher priority first)
-    const sortedRules = [...routingRules]
-        .filter(r => r.enabled !== false)
-        .sort((a, b) => (b.priority || 0) - (a.priority || 0));
-
-    for (const rule of sortedRules) {
-        if (!Array.isArray(rule.conditions) || rule.conditions.length === 0) continue;
-
-        const target = resolveClashTarget(rule.targetType, rule.target, customOutbounds, chains, allProxyNames);
-        const isAndMode = rule.matchMode === 'all';
-
-        for (const condition of rule.conditions) {
-            if (!condition.field || !condition.value) continue;
-
-            const clashRule = convertConditionToClash(condition, target, isAndMode);
-            if (clashRule) {
-                rules.push(clashRule);
-                // In 'all' mode, only the first condition generates the rule
-                // (AND conditions aren't natively supported in Clash without chains)
-            }
-        }
-    }
-
-    return rules;
-}
-
-/**
- * Convert a single condition to Clash rule format.
- */
-function convertConditionToClash(condition, target, isAndMode) {
-    const { field, operator, value, invert } = condition;
-    const prefix = invert ? '!' : '';
-
-    switch (field) {
-        case 'domain':
-            if (operator === 'eq') return `${prefix}DOMAIN,${value},${target}`;
-            if (operator === 'suffix') return `${prefix}DOMAIN-SUFFIX,${value},${target}`;
-            if (operator === 'keyword') return `${prefix}DOMAIN-KEYWORD,${value},${target}`;
-            if (operator === 'regex') return `${prefix}DOMAIN-REGEX,${value},${target}`;
-            break;
-        case 'domain_suffix':
-            return `${prefix}DOMAIN-SUFFIX,${value},${target}`;
-        case 'domain_keyword':
-            return `${prefix}DOMAIN-KEYWORD,${value},${target}`;
-        case 'domain_regex':
-            return `${prefix}DOMAIN-REGEX,${value},${target}`;
-        case 'ip_cidr':
-            if (operator === 'in') return `${prefix}IP-CIDR,${value},${target}`;
-            if (operator === 'not_in') return `!${prefix}IP-CIDR,${value},${target}`;
-            break;
-        case 'ip_cidr_src':
-            if (operator === 'in') return `${prefix}SRC-IP-CIDR,${value},${target}`;
-            if (operator === 'not_in') return `!${prefix}SRC-IP-CIDR,${value},${target}`;
-            break;
-        case 'port':
-            if (operator === 'eq') return `${prefix}DST-PORT,${value},${target}`;
-            if (operator === 'range') return `${prefix}DST-PORT,${value},${target}`;
-            if (operator === 'in') return `${prefix}DST-PORT,${value},${target}`;
-            break;
-        case 'port_src':
-            return `${prefix}SRC-PORT,${value},${target}`;
-        case 'protocol':
-            // Clash uses rule-providers for protocol matching, not direct rules
-            // Use a comment to indicate the protocol rule
-            return `# PROTOCOL:${value} -> ${target} (Clash does not support native protocol match)`;
-        case 'network':
-            if (value === 'tcp') return `${prefix}NETWORK,TCP,${target}`;
-            if (value === 'udp') return `${prefix}NETWORK,UDP,${target}`;
-            break;
-        case 'geoip':
-            return `${prefix}GEOIP,${value},${target}`;
-        case 'geosite':
-            return `${prefix}GEOSITE,${value},${target}`;
-        case 'process_name':
-            return `${prefix}PROCESS-NAME,${value},${target}`;
+            return null; // REJECT is built-in for Clash
         default:
             return null;
     }
-    return null;
 }
 
 /**
- * Build Sing-Box routing rules from routing rules.
- * Sing-Box uses: route.rules[] with format:
- * {
- *   "domain": [...],
- *   "domain_suffix": [...],
- *   "domain_keyword": [...],
- *   "domain_regex": [...],
- *   "ip_cidr": [...],
- *   "source_ip_cidr": [...],
- *   "port": [...],
- *   "source_port": [...],
- *   "protocol": [...],
- *   "network": "tcp"|"udp",
- *   "outbound": "..."
- * }
+ * Convert an outbound config to a Sing-Box outbound entry.
  *
- * @param {Array} routingRules
- * @param {Array} customOutbounds
- * @param {Array} chains
- * @param {Array} allOutboundTags
- * @returns {Array} Sing-Box route rules
+ * @param {Object} ob - Outbound config
+ * @returns {Object|null} Sing-Box outbound object
  */
-export function buildSingboxRoutingRules(routingRules = [], customOutbounds = [], chains = [], allOutboundTags = []) {
-    if (!Array.isArray(routingRules) || routingRules.length === 0) return [];
+export function outboundToSingboxOutbound(ob) {
+    if (!ob || !ob.enabled) return null;
 
-    const rules = [];
+    const tag = ob.name;
+
+    switch (ob.protocol) {
+        case 'direct':
+            return { tag, type: 'direct' };
+        case 'block':
+            return { tag, type: 'block' };
+        case 'shadowsocks':
+            return {
+                tag,
+                type: 'shadowsocks',
+                server: ob.server,
+                server_port: ob.port,
+                method: ob.method || 'aes-128-gcm',
+                password: ob.password
+            };
+        case 'vmess':
+            return {
+                tag,
+                type: 'vmess',
+                server: ob.server,
+                server_port: ob.port,
+                uuid: ob.uuid,
+                security: ob.cipher || 'auto',
+                alter_id: ob.alterId || 0,
+                ...(ob.network === 'ws' ? {
+                    transport: {
+                        type: 'ws',
+                        path: ob.wsPath || '/',
+                        headers: ob.wsHost ? { Host: ob.wsHost } : {}
+                    }
+                } : {}),
+                ...(ob.tls ? { tls: { enabled: true, server_name: ob.sni || ob.server, insecure: ob.skipCertVerify } } : {})
+            };
+        case 'trojan':
+            return {
+                tag,
+                type: 'trojan',
+                server: ob.server,
+                server_port: ob.port,
+                password: ob.password,
+                ...(ob.sni ? { tls: { enabled: true, server_name: ob.sni, insecure: ob.skipCertVerify } } : {})
+            };
+        case 'vless':
+            return {
+                tag,
+                type: 'vless',
+                server: ob.server,
+                server_port: ob.port,
+                uuid: ob.uuid,
+                flow: ob.flow || '',
+                ...(ob.network === 'ws' ? {
+                    transport: { type: 'ws', path: '/', headers: {} }
+                } : {}),
+                ...(ob.tls ? { tls: { enabled: true, server_name: ob.sni || ob.server, insecure: ob.skipCertVerify } } : {}),
+                ...(ob.reality ? {
+                    tls: {
+                        enabled: true,
+                        reality: {
+                            enabled: true,
+                            public_key: ob.realityPublicKey || '',
+                            short_id: ob.realityShortId || ''
+                        }
+                    }
+                } : {})
+            };
+        case 'hysteria2':
+            return {
+                tag,
+                type: 'hysteria2',
+                server: ob.server,
+                server_port: ob.port,
+                password: ob.password,
+                ...(ob.sni ? { tls: { enabled: true, server_name: ob.sni, insecure: ob.skipCertVerify } } : {}),
+                up_mbps: ob.upMbps || 100,
+                down_mbps: ob.downMbps || 100
+            };
+        case 'socks5':
+            return {
+                tag,
+                type: 'socks5',
+                server: ob.server,
+                server_port: ob.port,
+                ...(ob.username ? { username: ob.username } : {}),
+                ...(ob.password ? { password: ob.password } : {}),
+                udp: ob.udp || false
+            };
+        case 'http':
+            return {
+                tag,
+                type: 'http',
+                server: ob.server,
+                server_port: ob.port,
+                ...(ob.username ? { username: ob.username } : {}),
+                ...(ob.password ? { password: ob.password } : {}),
+                tls: ob.tls || false
+            };
+        case 'wireguard':
+            return {
+                tag,
+                type: 'wireguard',
+                server: ob.server,
+                server_port: ob.port,
+                private_key: ob.privateKey || '',
+                peer_public_key: ob.publicKey || '',
+                local_address: ob.localAddress || '',
+                mtu: ob.mtu || 1420
+            };
+        default:
+            return null;
+    }
+}
+
+/**
+ * Apply routing rules to generate chain proxy groups for Clash.
+ *
+ * Each routing rule maps a source (proxy node name) to a target (outbound name).
+ * This creates relay/chain proxy-groups in Clash format.
+ *
+ * @param {Array} routingRules - Routing rules
+ * @param {Array} outbounds - All outbound configs
+ * @param {Array} allProxyNames - All existing proxy node names
+ * @returns {Object} { proxyGroups: Array, rules: Array }
+ */
+export function applyClashRouting(routingRules = [], outbounds = [], allProxyNames = []) {
+    const proxyGroups = [];
+    const clashRules = [];
+    const nameSet = new Set(allProxyNames);
+    const outboundMap = {};
+    outbounds.filter(o => o.enabled).forEach(ob => { outboundMap[ob.id] = ob; outboundMap[ob.name] = ob; });
+
+    // Sort by priority
     const sortedRules = [...routingRules]
-        .filter(r => r.enabled !== false)
+        .filter(r => r.enabled)
         .sort((a, b) => (b.priority || 0) - (a.priority || 0));
 
     for (const rule of sortedRules) {
-        if (!Array.isArray(rule.conditions) || rule.conditions.length === 0) continue;
+        const targetOb = outboundMap[rule.targetOutbound];
+        if (!targetOb) continue;
 
-        const target = resolveClashTarget(rule.targetType, rule.target, customOutbounds, chains, allOutboundTags);
-        const singboxRule = {};
+        if (rule.sourceType === 'node') {
+            // Node routing: Proxy Node → Outbound
+            // Create a relay group: Node → Outbound
+            const outboundProxy = outboundToClashProxy(targetOb);
+            if (!outboundProxy && !['direct', 'block'].includes(targetOb.protocol)) continue;
 
-        // Group conditions by field for Sing-Box format
-        const domainList = [];
-        const domainSuffixList = [];
-        const domainKeywordList = [];
-        const domainRegexList = [];
-        const ipCidrList = [];
-        const sourceIpCidrList = [];
-        const portList = [];
-        const sourcePortList = [];
-        const protocolList = [];
-        const invertRules = [];
+            const groupName = `${rule.name || 'Route'}`;
 
-        for (const condition of rule.conditions) {
-            const { field, operator, value, invert } = condition;
-
-            const pushToList = (list) => {
-                if (invert) {
-                    invertRules.push({ field, value });
-                } else {
-                    list.push(value);
+            if (targetOb.protocol === 'direct') {
+                // Node → DIRECT: just a select group that goes through the node
+                if (nameSet.has(rule.sourceValue)) {
+                    proxyGroups.push({
+                        name: groupName,
+                        type: 'select',
+                        proxies: [rule.sourceValue, 'DIRECT']
+                    });
                 }
-            };
+            } else if (targetOb.protocol === 'block') {
+                if (nameSet.has(rule.sourceValue)) {
+                    proxyGroups.push({
+                        name: groupName,
+                        type: 'select',
+                        proxies: [rule.sourceValue, 'REJECT']
+                    });
+                }
+            } else {
+                // Node → Outbound: relay chain
+                const proxyName = targetOb.name;
+                if (nameSet.has(rule.sourceValue)) {
+                    proxyGroups.push({
+                        name: groupName,
+                        type: 'relay',
+                        proxies: [rule.sourceValue, proxyName]
+                    });
+                }
+            }
+        } else {
+            // Traffic-based routing: domain/IP conditions → Outbound
+            const proxyName = targetOb.protocol === 'direct' ? 'DIRECT'
+                : targetOb.protocol === 'block' ? 'REJECT'
+                : targetOb.name;
 
-            switch (field) {
+            switch (rule.sourceType) {
                 case 'domain':
+                    clashRules.push(`DOMAIN,${rule.sourceValue},${proxyName}`);
+                    break;
                 case 'domain_suffix':
-                    pushToList(operator === 'suffix' || field === 'domain_suffix' ? domainSuffixList : domainList);
+                    clashRules.push(`DOMAIN-SUFFIX,${rule.sourceValue},${proxyName}`);
                     break;
                 case 'domain_keyword':
-                    pushToList(domainKeywordList);
-                    break;
-                case 'domain_regex':
-                    pushToList(domainRegexList);
+                    clashRules.push(`DOMAIN-KEYWORD,${rule.sourceValue},${proxyName}`);
                     break;
                 case 'ip_cidr':
-                    pushToList(ipCidrList);
-                    break;
-                case 'ip_cidr_src':
-                    pushToList(sourceIpCidrList);
-                    break;
-                case 'port':
-                    pushToList(portList);
-                    break;
-                case 'port_src':
-                    pushToList(sourcePortList);
-                    break;
-                case 'protocol':
-                    pushToList(protocolList);
+                    clashRules.push(`IP-CIDR,${rule.sourceValue},${proxyName}`);
                     break;
                 case 'geoip':
-                    pushToList(ipCidrList); // GeoIP as IP CIDR
+                    clashRules.push(`GEOIP,${rule.sourceValue},${proxyName}`);
                     break;
                 case 'geosite':
-                    pushToList(domainSuffixList); // GeoSite as domain suffix
+                    clashRules.push(`GEOSITE,${rule.sourceValue},${proxyName}`);
+                    break;
+                case 'port':
+                    clashRules.push(`DST-PORT,${rule.sourceValue},${proxyName}`);
+                    break;
+                case 'all':
+                    clashRules.push(`MATCH,${proxyName}`);
                     break;
             }
         }
-
-        if (domainList.length > 0) singboxRule.domain = domainList;
-        if (domainSuffixList.length > 0) singboxRule.domain_suffix = domainSuffixList;
-        if (domainKeywordList.length > 0) singboxRule.domain_keyword = domainKeywordList;
-        if (domainRegexList.length > 0) singboxRule.domain_regex = domainRegexList;
-        if (ipCidrList.length > 0) singboxRule.ip_cidr = ipCidrList;
-        if (sourceIpCidrList.length > 0) singboxRule.source_ip_cidr = sourceIpCidrList;
-        if (portList.length > 0) singboxRule.port = portList;
-        if (sourcePortList.length > 0) singboxRule.source_port = sourcePortList;
-        if (protocolList.length > 0) singboxRule.protocol = protocolList;
-        if (invertRules.length > 0) {
-            singboxRule.invert = true;
-        }
-
-        singboxRule.outbound = target;
-
-        // Only push if we have at least one condition
-        if (Object.keys(singboxRule).length > 1) { // > 1 because outbound is always there
-            rules.push(singboxRule);
-        }
     }
 
-    return rules;
+    return { proxyGroups, rules: clashRules };
 }
 
 /**
- * Build Surge rules from routing rules.
- * Surge format: DOMAIN, DOMAIN-SUFFIX, DOMAIN-KEYWORD, IP-CIDR, GEOIP, etc.
+ * Apply routing rules to generate chain outbounds for Sing-Box.
  *
  * @param {Array} routingRules
- * @param {Array} customOutbounds
- * @param {Array} chains
- * @param {Array} allProxyNames
- * @returns {Array} Surge rule strings
+ * @param {Array} outbounds
+ * @param {Array} allOutboundTags
+ * @returns {Object} { chainOutbounds: Array, routeRules: Array }
  */
-export function buildSurgeRules(routingRules = [], customOutbounds = [], chains = [], allProxyNames = []) {
-    // Surge rules format is very similar to Clash
-    return buildClashRules(routingRules, customOutbounds, chains, allProxyNames);
-}
+export function applySingboxRouting(routingRules = [], outbounds = [], allOutboundTags = []) {
+    const routeRules = [];
+    const tagSet = new Set(allOutboundTags);
+    const outboundMap = {};
+    outbounds.filter(o => o.enabled).forEach(ob => { outboundMap[ob.id] = ob; outboundMap[ob.name] = ob; });
 
-/**
- * Build Loon rules from routing rules.
- * Loon format is very similar to Surge/Clash.
- *
- * @param {Array} routingRules
- * @param {Array} customOutbounds
- * @param {Array} chains
- * @param {Array} allProxyNames
- * @returns {Array} Loon rule strings
- */
-export function buildLoonRules(routingRules = [], customOutbounds = [], chains = [], allProxyNames = []) {
-    return buildClashRules(routingRules, customOutbounds, chains, allProxyNames);
-}
+    const sortedRules = [...routingRules]
+        .filter(r => r.enabled)
+        .sort((a, b) => (b.priority || 0) - (a.priority || 0));
 
-/**
- * Build custom outbound configurations for Sing-Box.
- * Generates the `outbounds` array in Sing-Box config.
- *
- * @param {Array} customOutbounds - User-defined outbound configurations
- * @returns {Array} Sing-Box outbound config objects
- */
-export function buildSingboxCustomOutbounds(customOutbounds = []) {
-    if (!Array.isArray(customOutbounds) || customOutbounds.length === 0) return [];
+    for (const rule of sortedRules) {
+        const targetOb = outboundMap[rule.targetOutbound];
+        if (!targetOb) continue;
 
-    const outbounds = [];
+        const targetTag = targetOb.protocol === 'direct' ? 'direct'
+            : targetOb.protocol === 'block' ? 'block'
+            : targetOb.name;
 
-    for (const ob of customOutbounds) {
-        if (!ob.enabled) continue;
+        if (rule.sourceType === 'node') {
+            // Node routing → create a chain outbound or route rule
+            // For Sing-Box, we create a simple route rule
+            if (tagSet.has(rule.sourceValue)) {
+                routeRules.push({
+                    outbound: targetTag,
+                    // Match by inbound tag (the proxy node name as tag)
+                    inbound: [rule.sourceValue]
+                });
+            }
+        } else {
+            // Traffic-based routing
+            const singboxRule = { outbound: targetTag };
 
-        let outbound = null;
+            switch (rule.sourceType) {
+                case 'domain':
+                    singboxRule.domain = [rule.sourceValue];
+                    break;
+                case 'domain_suffix':
+                    singboxRule.domain_suffix = [rule.sourceValue];
+                    break;
+                case 'domain_keyword':
+                    singboxRule.domain_keyword = [rule.sourceValue];
+                    break;
+                case 'ip_cidr':
+                    singboxRule.ip_cidr = [rule.sourceValue];
+                    break;
+                case 'geoip':
+                    singboxRule.ip_cidr = [rule.sourceValue]; // geoip as ip_cidr
+                    break;
+                case 'geosite':
+                    singboxRule.domain_suffix = [rule.sourceValue]; // geosite as domain
+                    break;
+                case 'port':
+                    singboxRule.port = [parseInt(rule.sourceValue)];
+                    break;
+                case 'all':
+                    // Default route - no conditions needed
+                    break;
+            }
 
-        switch (ob.type) {
-            case 'direct':
-                outbound = {
-                    tag: ob.name,
-                    type: 'direct'
-                };
-                break;
-            case 'block':
-                outbound = {
-                    tag: ob.name,
-                    type: 'block'
-                };
-                break;
-            case 'dns':
-                outbound = {
-                    tag: ob.name || 'dns-out',
-                    type: 'dns'
-                };
-                break;
-            case 'load_balance':
-                outbound = {
-                    tag: ob.name,
-                    type: 'load-balance',
-                    outbounds: Array.isArray(ob.targets) ? ob.targets : [],
-                    strategy: ob.strategy || 'random'
-                };
-                break;
-            case 'chain':
-                outbound = {
-                    tag: ob.name,
-                    type: 'chain',
-                    outbounds: Array.isArray(ob.targets) ? ob.targets : []
-                };
-                break;
-            case 'wireguard':
-                outbound = {
-                    tag: ob.name,
-                    type: 'wireguard',
-                    ...(ob.wireguardConfig || {})
-                };
-                break;
-            case 'custom':
-                // Try to parse custom JSON config
-                try {
-                    const parsed = typeof ob.customConfig === 'string'
-                        ? JSON.parse(ob.customConfig)
-                        : ob.customConfig;
-                    outbound = {
-                        tag: ob.name,
-                        ...parsed
-                    };
-                } catch {
-                    outbound = null;
-                }
-                break;
-        }
-
-        if (outbound) {
-            outbounds.push(outbound);
+            routeRules.push(singboxRule);
         }
     }
 
-    return outbounds;
+    return { routeRules };
 }
 
 /**
- * Build custom proxy-groups for Clash/Mihomo from custom outbounds.
- *
- * @param {Array} customOutbounds
- * @returns {Array} Clash proxy-group configs
+ * Convert outbound to Surge proxy entry format.
  */
-export function buildClashCustomProxyGroups(customOutbounds = []) {
-    if (!Array.isArray(customOutbounds) || customOutbounds.length === 0) return [];
+export function outboundToSurgeProxy(ob) {
+    if (!ob || !ob.enabled) return null;
+    if (ob.protocol === 'direct' || ob.protocol === 'block') return null;
 
-    const groups = [];
+    // Surge format: ProxyName = protocol, server, port, ...
+    const tag = ob.name;
 
-    for (const ob of customOutbounds) {
-        if (!ob.enabled) continue;
-
-        switch (ob.type) {
-            case 'load_balance':
-                groups.push({
-                    name: ob.name,
-                    type: 'load-balance',
-                    proxies: Array.isArray(ob.targets) ? ob.targets : [],
-                    url: ob.config?.url || 'http://www.gstatic.com/generate_204',
-                    interval: ob.config?.interval || 300
-                });
-                break;
-            case 'chain':
-                groups.push({
-                    name: ob.name,
-                    type: 'relay',
-                    proxies: Array.isArray(ob.targets) ? ob.targets : []
-                });
-                break;
-        }
+    switch (ob.protocol) {
+        case 'shadowsocks':
+            return `${tag} = ss, ${ob.server}, ${ob.port}, encrypt-method=${ob.method || 'aes-128-gcm'}, password=${ob.password}`;
+        case 'vmess':
+            return `${tag} = vmess, ${ob.server}, ${ob.port}, username=${ob.uuid}, tls=${ob.tls ? 'true' : 'false'}`;
+        case 'trojan':
+            return `${tag} = trojan, ${ob.server}, ${ob.port}, password=${ob.password}${ob.sni ? `, sni=${ob.sni}` : ''}, skip-cert-verify=${ob.skipCertVerify || false}`;
+        case 'socks5':
+            return `${tag} = socks5, ${ob.server}, ${ob.port}${ob.username ? `, username=${ob.username}, password=${ob.password}` : ''}`;
+        case 'http':
+            return `${tag} = http, ${ob.server}, ${ob.port}${ob.username ? `, username=${ob.username}, password=${ob.password}` : ''}`;
+        default:
+            return null;
     }
-
-    return groups;
 }
 
 /**
- * Get all available outbound target names for the UI.
- * Combines: DIRECT, REJECT, proxy nodes, chains, custom outbounds
- *
- * @param {Array} allProxyNames - All proxy node names
- * @param {Array} customOutbounds - Custom outbound configs
- * @param {Array} chains - Chain proxy configs
- * @returns {Array} Available targets for routing rules
+ * Get the display label for an outbound protocol.
  */
-export function getAvailableTargets(allProxyNames = [], customOutbounds = [], chains = []) {
+export function getProtocolLabel(protocol) {
+    return PROTOCOL_LABELS[protocol] || protocol;
+}
+
+/**
+ * Get all available node names combined with outbound names as routing targets.
+ */
+export function getAvailableTargets(allProxyNames = [], outbounds = []) {
     const targets = [
-        { id: 'direct', name: 'DIRECT (直连)', type: 'direct' },
-        { id: 'block', name: 'REJECT (拒绝)', type: 'block' },
-        { id: 'dns', name: 'DNS', type: 'dns' }
+        { id: 'DIRECT', name: 'DIRECT (直连)', type: 'builtin' },
+        { id: 'REJECT', name: 'REJECT (拒绝)', type: 'builtin' }
     ];
 
-    // Add proxy nodes
+    // Proxy nodes as targets
     allProxyNames.forEach(name => {
-        targets.push({ id: name, name: `代理节点: ${name}`, type: 'proxy' });
+        targets.push({ id: name, name: `节点: ${name}`, type: 'proxy' });
     });
 
-    // Add custom outbounds
-    customOutbounds.forEach(ob => {
+    // Outbound configs as targets
+    outbounds.filter(o => o.enabled).forEach(ob => {
         targets.push({
             id: ob.id,
-            name: `出站: ${ob.name} (${ob.type})`,
+            name: `出站: ${ob.name} (${getProtocolLabel(ob.protocol)})`,
             type: 'outbound'
-        });
-    });
-
-    // Add chains
-    chains.forEach(chain => {
-        targets.push({
-            id: chain.id,
-            name: `链式代理: ${chain.name}`,
-            type: 'chain'
         });
     });
 
