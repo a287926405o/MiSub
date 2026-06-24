@@ -22,13 +22,17 @@ const baseUrl = window.location.origin;
 const profiles = computed(() => dataStore.profiles || []);
 const activeProfiles = computed(() => profiles.value.filter(p => !p.disabled));
 const showExportPanel = ref(false);
+const exportFormatPicker = ref(null); // chain id for which the format picker is open
 
-function getChainExportUrl(chain) {
-  return `${baseUrl}/api/chains/${chain.id}/export?target=clash`;
+function getChainExportUrl(chain, target = 'clash') {
+  return `${baseUrl}/api/chains/${chain.id}/export?target=${target}`;
 }
-function copyChainExport(chain) {
-  const url = getChainExportUrl(chain);
-  navigator.clipboard.writeText(url).then(() => showToast(t('chains.exportCopied'), 'success')).catch(() => showToast('复制失败', 'error'));
+function copyChainExport(chain, target = 'clash') {
+  const url = getChainExportUrl(chain, target);
+  navigator.clipboard.writeText(url).then(() => {
+    showToast(t('chains.exportCopied'), 'success');
+    exportFormatPicker.value = null;
+  }).catch(() => showToast('复制失败', 'error'));
 }
 
 function getProfileUrl(profile) {
@@ -221,6 +225,8 @@ onMounted(async () => {
     <div v-if="showExportPanel" class="mb-4 bg-white/80 dark:bg-gray-900/60 border border-gray-100/80 dark:border-white/10 misub-radius-lg p-4 space-y-3">
       <h3 class="text-sm font-semibold text-gray-700 dark:text-gray-300">{{ t('chains.exportTitle') }}</h3>
       <p class="text-xs text-gray-500 dark:text-gray-400">{{ t('chains.exportDesc') }}</p>
+
+      <!-- 订阅组导出 -->
       <div v-if="activeProfiles.length === 0" class="text-sm text-gray-400 italic">{{ t('chains.noProfiles') }}</div>
       <div v-for="profile in activeProfiles" :key="profile.id" class="flex items-center justify-between p-3 bg-gray-50/50 dark:bg-gray-800/30 rounded-lg">
         <div class="min-w-0 flex-1">
@@ -238,6 +244,22 @@ onMounted(async () => {
             </svg>
             {{ t('actions.copy') }}
           </button>
+        </div>
+      </div>
+
+      <!-- 链式代理导出 -->
+      <div v-if="chains.length > 0" class="pt-3 border-t border-gray-100 dark:border-white/10">
+        <p class="text-xs font-medium text-gray-500 dark:text-gray-400 mb-2">{{ t('chains.chainExportSection') }}</p>
+        <div v-for="chain in chains" :key="chain.id" class="flex items-center justify-between p-3 bg-gray-50/50 dark:bg-gray-800/30 rounded-lg mb-1">
+          <div class="min-w-0 flex-1">
+            <p class="text-sm font-medium text-gray-800 dark:text-gray-200 truncate">{{ chain.name || 'Unnamed' }}</p>
+            <p class="text-xs text-gray-400 dark:text-gray-500 truncate mt-0.5 font-mono">{{ getChainExportUrl(chain, 'auto') }}</p>
+          </div>
+          <div class="flex gap-1.5 shrink-0 ml-2">
+            <button @click="copyChainExport(chain, 'clash')" class="px-2.5 py-1 text-xs bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 text-gray-600 dark:text-gray-300 rounded" title="Clash">Clash</button>
+            <button @click="copyChainExport(chain, 'singbox')" class="px-2.5 py-1 text-xs bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 text-gray-600 dark:text-gray-300 rounded" title="Sing-Box">Sing-Box</button>
+            <button @click="copyChainExport(chain, 'v2ray')" class="px-2.5 py-1 text-xs bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 text-gray-600 dark:text-gray-300 rounded" title="v2ray">v2ray</button>
+          </div>
         </div>
       </div>
     </div>
@@ -291,12 +313,20 @@ onMounted(async () => {
             </svg>
             {{ t('actions.edit') }}
           </button>
-          <button @click="copyChainExport(chain)"
-            class="inline-flex items-center justify-center px-3 py-1.5 text-xs font-medium text-green-600 dark:text-green-400 bg-green-50 dark:bg-green-900/20 hover:bg-green-100 dark:hover:bg-green-900/40 misub-radius-lg" title="复制链式代理订阅链接">
-            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
-            </svg>
-          </button>
+          <div class="relative">
+            <button @click.stop="exportFormatPicker = exportFormatPicker === chain.id ? null : chain.id"
+              class="inline-flex items-center justify-center px-3 py-1.5 text-xs font-medium text-green-600 dark:text-green-400 bg-green-50 dark:bg-green-900/20 hover:bg-green-100 dark:hover:bg-green-900/40 misub-radius-lg" title="复制链式代理订阅链接">
+              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+              </svg>
+            </button>
+            <div v-if="exportFormatPicker === chain.id" class="absolute right-0 bottom-full mb-2 z-50 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg py-1 min-w-[130px]" @click.stop>
+              <button @click="copyChainExport(chain, 'clash')" class="block w-full text-left px-3 py-1.5 text-xs text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700">Clash</button>
+              <button @click="copyChainExport(chain, 'singbox')" class="block w-full text-left px-3 py-1.5 text-xs text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700">Sing-Box</button>
+              <button @click="copyChainExport(chain, 'v2ray')" class="block w-full text-left px-3 py-1.5 text-xs text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700">v2ray</button>
+              <button @click="copyChainExport(chain, 'auto')" class="block w-full text-left px-3 py-1.5 text-xs text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700">Auto</button>
+            </div>
+          </div>
           <button @click="removeChain(chain)"
             class="inline-flex items-center justify-center px-3 py-1.5 text-xs font-medium text-red-500 hover:text-red-700 bg-red-50 dark:bg-red-900/20 hover:bg-red-100 dark:hover:bg-red-900/40 misub-radius-lg">
             <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
