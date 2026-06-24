@@ -19,6 +19,14 @@ import {
     buildLoonChainConfigs,
     formatChainIniSection
 } from './chain-proxy-service.js';
+import {
+    buildClashRules,
+    buildSingboxRoutingRules,
+    buildSurgeRules,
+    buildLoonRules,
+    buildSingboxCustomOutbounds,
+    buildClashCustomProxyGroups
+} from './routing-service.js';
 
 function getTemplateExtension(templateUrl) {
     const raw = typeof templateUrl === 'string' ? templateUrl.trim() : '';
@@ -147,7 +155,9 @@ export class ProcessorService {
             managedConfigUrl,
             storageAdapter,
             userInfoHeader,
-            chains = []              // [Chain Proxy] Array of chain objects
+            chains = [],              // [Chain Proxy] Array of chain objects
+            outbounds = [],            // [Outbound Settings] Array of custom outbound objects
+            routingRules = []          // [Routing Rules] Array of routing rule objects
         } = options || {};
 
         // Check for Base64 (simplest case)
@@ -320,6 +330,123 @@ export class ProcessorService {
                     }
                 } catch (chainError) {
                     console.warn('[ChainProxy] Failed to inject chain configs:', chainError?.message || chainError);
+                }
+            }
+        }
+
+        // ===== Custom Outbound & Routing Rule Injection (3x-ui style) =====
+        // Inject custom outbound configs and routing rules into the generated output
+        if (finalContent) {
+            const activeOutbounds = Array.isArray(outbounds) ? outbounds.filter(o => o.enabled) : [];
+            const activeRules = Array.isArray(routingRules) ? routingRules.filter(r => r.enabled) : [];
+
+            if (activeOutbounds.length > 0 || activeRules.length > 0) {
+                try {
+                    if (targetFormat === 'clash' || targetFormat === 'egern') {
+                        const clashConfig = yaml.load(finalContent);
+                        if (clashConfig && typeof clashConfig === 'object') {
+                            const proxyNames = Array.isArray(clashConfig.proxies)
+                                ? clashConfig.proxies.map(p => p.name).filter(Boolean)
+                                : [];
+
+                            // Inject custom proxy-groups from outbound settings (load-balance, chain)
+                            const customGroups = buildClashCustomProxyGroups(activeOutbounds);
+                            if (customGroups.length > 0) {
+                                clashConfig['proxy-groups'] = [
+                                    ...(Array.isArray(clashConfig['proxy-groups']) ? clashConfig['proxy-groups'] : []),
+                                    ...customGroups
+                                ];
+                            }
+
+                            // Inject routing rules
+                            const routingRulesArr = buildClashRules(activeRules, activeOutbounds, chains, proxyNames);
+                            if (routingRulesArr.length > 0) {
+                                const existingRules = Array.isArray(clashConfig.rules) ? clashConfig.rules : [];
+                                // Insert custom rules before the last MATCH rule (if any)
+                                const matchIndex = existingRules.findIndex(r => r.startsWith('MATCH,'));
+                                if (matchIndex !== -1) {
+                                    clashConfig.rules = [
+                                        ...existingRules.slice(0, matchIndex),
+                                        ...routingRulesArr,
+                                        ...existingRules.slice(matchIndex)
+                                    ];
+                                } else {
+                                    clashConfig.rules = [
+                                        ...routingRulesArr,
+                                        ...existingRules
+                                    ];
+                                }
+                                headers['X-MiSub-Routing-Injected'] = String(routingRulesArr.length);
+                            }
+
+                            finalContent = yaml.dump(clashConfig, {
+                                indent: 2,
+                                lineWidth: -1,
+                                noRefs: true,
+                                quotingType: '"',
+                                forceQuotes: false
+                            });
+                        }
+                    } else if (targetFormat === 'singbox' || targetFormat === 'sing-box') {
+                        const singboxConfig = JSON.parse(finalContent);
+                        if (singboxConfig && typeof singboxConfig === 'object') {
+                            const outboundTags = Array.isArray(singboxConfig.outbounds)
+                                ? singboxConfig.outbounds.map(o => o.tag).filter(Boolean)
+                                : [];
+
+                            // Inject custom outbounds
+                            const customOutbounds = buildSingboxCustomOutbounds(activeOutbounds);
+                            if (customOutbounds.length > 0) {
+                                singboxConfig.outbounds = [
+                                    ...(Array.isArray(singboxConfig.outbounds) ? singboxConfig.outbounds : []),
+                                    ...customOutbounds
+                                ];
+                            }
+
+                            // Inject routing rules
+                            const routingRulesArr = buildSingboxRoutingRules(activeRules, activeOutbounds, chains, outboundTags);
+                            if (routingRulesArr.length > 0) {
+                                if (!singboxConfig.route) {
+                                    singboxConfig.route = {};
+                                }
+                                singboxConfig.route.rules = [
+                                    ...routingRulesArr,
+                                    ...(Array.isArray(singboxConfig.route?.rules) ? singboxConfig.route.rules : [])
+                                ];
+                                headers['X-MiSub-Routing-Injected'] = String(routingRulesArr.length);
+                            }
+
+                            finalContent = JSON.stringify(singboxConfig, null, 2);
+                        }
+                    } else if (targetFormat === 'surge') {
+                        // Inject custom rules for Surge (similar to Clash)
+                        const proxyNames = extractProxyNamesFromSurge(finalContent);
+                        const routingRulesArr = buildSurgeRules(activeRules, activeOutbounds, chains, proxyNames);
+                        if (routingRulesArr.length > 0) {
+                            const ruleSection = '\n' + routingRulesArr.join('\n');
+                            if (finalContent.includes('[Rule]')) {
+                                finalContent = finalContent.replace(/(\[Rule\])/, `$1${ruleSection}`);
+                            } else {
+                                finalContent += `\n[Rule]${ruleSection}\n`;
+                            }
+                            headers['X-MiSub-Routing-Injected'] = String(routingRulesArr.length);
+                        }
+                    } else if (targetFormat === 'loon') {
+                        // Inject custom rules for Loon (similar to Clash)
+                        const proxyNames = extractProxyNamesFromSurge(finalContent);
+                        const routingRulesArr = buildLoonRules(activeRules, activeOutbounds, chains, proxyNames);
+                        if (routingRulesArr.length > 0) {
+                            const ruleSection = '\n' + routingRulesArr.join('\n');
+                            if (finalContent.includes('[Rule]')) {
+                                finalContent = finalContent.replace(/(\[Rule\])/, `$1${ruleSection}`);
+                            } else {
+                                finalContent += `\n[Rule]${ruleSection}\n`;
+                            }
+                            headers['X-MiSub-Routing-Injected'] = String(routingRulesArr.length);
+                        }
+                    }
+                } catch (routingError) {
+                    console.warn('[Routing] Failed to inject routing configs:', routingError?.message || routingError);
                 }
             }
         }

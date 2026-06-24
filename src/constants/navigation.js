@@ -16,6 +16,8 @@ export const MAIN_NAV_ITEMS = [
   { key: 'nav.groups', name: '机场订阅', path: '/dashboard/groups', iconPath: NAV_ICONS.groups },
   { key: 'nav.nodes', name: '手动节点', path: '/dashboard/nodes', iconPath: NAV_ICONS.nodes },
   { key: 'nav.chains', name: '链式代理', path: '/dashboard/chains', iconPath: NAV_ICONS.chain },
+  { key: 'nav.outbounds', name: '出站设置', path: '/dashboard/outbounds', iconPath: NAV_ICONS.chain },
+  { key: 'nav.routing', name: '路由规则', path: '/dashboard/routing', iconPath: NAV_ICONS.layout },
   { key: 'nav.subscriptions', name: '我的订阅', path: '/dashboard/subscriptions', iconPath: NAV_ICONS.subscriptions },
   { key: 'nav.settings', name: '设置', path: '/dashboard/settings', iconPath: NAV_ICONS.settings }
 ];

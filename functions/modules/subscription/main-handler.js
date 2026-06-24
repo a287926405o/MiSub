@@ -22,6 +22,8 @@ import { renderClashFromIniTemplate, renderLoonFromIniTemplate, renderQuanxFromI
 import { getBuiltinTemplate } from './builtin-template-registry.js';
 import { assertPublicNetworkUrl } from '../security-utils.js';
 import { getChainsData } from '../handlers/chain-handler.js';
+import { getOutboundsData } from '../handlers/outbound-handler.js';
+import { getRoutingRulesData } from '../handlers/routing-rule-handler.js';
 
 function maskSensitiveLogValue(value) {
     const text = String(value ?? '');
@@ -383,11 +385,13 @@ export async function handleMisubRequest(context) {
 
     const storageAdapter = StorageFactory.createAdapter(env, await StorageFactory.getStorageType(env));
     context.storage = storageAdapter;
-    const [settingsData, allMisubs, allProfiles, chainsData] = await Promise.all([
+    const [settingsData, allMisubs, allProfiles, chainsData, outboundsData, routingRulesData] = await Promise.all([
         storageAdapter.get(KV_KEY_SETTINGS),
         storageAdapter.getAllSubscriptions(),
         storageAdapter.getAllProfiles(),
-        getChainsData(env).catch(() => [])   // [Chain Proxy] Load chains
+        getChainsData(env).catch(() => []),   // [Chain Proxy] Load chains
+        getOutboundsData(env).catch(() => []), // [Outbound Settings] Load custom outbounds
+        getRoutingRulesData(env).catch(() => []) // [Routing Rules] Load routing rules
     ]);
     const settings = settingsData || {};
 
@@ -401,6 +405,8 @@ export async function handleMisubRequest(context) {
     const config = migrateConfigSettings({ ...defaultSettings, ...settings });
     context.config = config;
     context.chains = Array.isArray(chainsData) ? chainsData : []; // [Chain Proxy]
+    context.outbounds = Array.isArray(outboundsData) ? outboundsData : []; // [Outbound Settings]
+    context.routingRules = Array.isArray(routingRulesData) ? routingRulesData : []; // [Routing Rules]
     context.accessLogPersistenceMode = config.accessLogPersistenceMode || 'light';
 
     // [Subconverter API] 提取 URL 控制参数，用于覆盖默认设置
@@ -791,7 +797,9 @@ export async function handleMisubRequest(context) {
                     managedConfigUrl: builtinOptions.managedConfigUrl,
                     storageAdapter,
                     userInfoHeader,
-                    chains: context?.chains || []        // [Chain Proxy]
+                    chains: context?.chains || [],        // [Chain Proxy]
+                    outbounds: context?.outbounds || [],  // [Outbound Settings]
+                    routingRules: context?.routingRules || []  // [Routing Rules]
                 });
 
                 if (rendered.headers?.['X-MiSub-Template-Mode'] === 'clash-yaml-profile') {
@@ -974,7 +982,9 @@ export async function handleMisubRequest(context) {
                 managedConfigUrl,
                 storageAdapter,
                 userInfoHeader,
-                chains: context?.chains || []        // [Chain Proxy]
+                chains: context?.chains || [],        // [Chain Proxy]
+                outbounds: context?.outbounds || [],  // [Outbound Settings]
+                routingRules: context?.routingRules || []  // [Routing Rules]
             });
 
             // [Subconverter API] 处理 list=true 逻辑：仅输出节点片段

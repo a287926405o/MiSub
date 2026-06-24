@@ -7,6 +7,8 @@ const ManualNodesView = () => import('../views/ManualNodesView.vue');
 const MySubscriptionsView = () => import('../views/MySubscriptionsView.vue');
 const SettingsView = () => import('../views/SettingsView.vue');
 const ChainProxiesView = () => import('../views/ChainProxiesView.vue');
+const OutboundSettingsView = () => import('../views/OutboundSettingsView.vue');
+const RoutingRulesView = () => import('../views/RoutingRulesView.vue');
 
 const HomeView = () => import('../views/HomeView.vue'); // [NEW] Wrapper View
 
@@ -58,6 +60,18 @@ const routes = [
         name: 'ChainProxies',
         component: ChainProxiesView,
         meta: { title: '链式代理' }
+    },
+    {
+        path: '/dashboard/outbounds',
+        name: 'OutboundSettings',
+        component: OutboundSettingsView,
+        meta: { title: '出站设置' }
+    },
+    {
+        path: '/dashboard/routing',
+        name: 'RoutingRules',
+        component: RoutingRulesView,
+        meta: { title: '路由规则' }
     },
     /* 
     // [REMOVED] Static /login route. 

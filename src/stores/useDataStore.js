@@ -24,6 +24,8 @@ export const useDataStore = defineStore('data', () => {
     const profiles = ref([]);
     const ruleTemplates = ref([]);
     const chains = ref([]);
+    const outbounds = ref([]);
+    const routingRules = ref([]);
     const settings = computed(() => settingsStore.config);
 
     // Store Status
@@ -44,7 +46,9 @@ export const useDataStore = defineStore('data', () => {
         subscriptions: [],
         profiles: [],
         ruleTemplates: [],
-        chains: []
+        chains: [],
+        outbounds: [],
+        routingRules: []
     };
 
     // --- Actions ---
@@ -59,6 +63,8 @@ export const useDataStore = defineStore('data', () => {
             profiles.value = data.profiles || [];
             ruleTemplates.value = data.ruleTemplates || [];
             chains.value = data.chains || [];
+            outbounds.value = data.outbounds || [];
+            routingRules.value = data.routingRules || [];
             settingsStore.setConfig({ ...DEFAULT_SETTINGS, ...data.config });
 
             updateSnapshot();
@@ -236,7 +242,10 @@ export const useDataStore = defineStore('data', () => {
         lastSavedData = {
             subscriptions: JSON.parse(JSON.stringify(subscriptions.value)),
             profiles: JSON.parse(JSON.stringify(profiles.value)),
-            ruleTemplates: JSON.parse(JSON.stringify(ruleTemplates.value))
+            ruleTemplates: JSON.parse(JSON.stringify(ruleTemplates.value)),
+            chains: JSON.parse(JSON.stringify(chains.value)),
+            outbounds: JSON.parse(JSON.stringify(outbounds.value)),
+            routingRules: JSON.parse(JSON.stringify(routingRules.value))
         };
     }
 
@@ -415,6 +424,8 @@ export const useDataStore = defineStore('data', () => {
         profiles,
         ruleTemplates,
         chains,
+        outbounds,
+        routingRules,
         settings,
         isLoading,
         saveState,

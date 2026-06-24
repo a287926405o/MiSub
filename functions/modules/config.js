@@ -9,6 +9,8 @@ export const KV_KEY_PROFILES = 'misub_profiles_v1';
 export const KV_KEY_GUESTBOOK = 'misub_guestbook_v1';
 export const KV_KEY_SETTINGS = 'worker_settings_v1';
 export const KV_KEY_CHAINS = 'misub_chains_v1';
+export const KV_KEY_OUTBOUNDS = 'misub_outbounds_v1';
+export const KV_KEY_ROUTING_RULES = 'misub_routing_rules_v1';
 
 // Auth
 export const COOKIE_NAME = 'auth_session';

@@ -54,6 +54,18 @@ import {
     handleChainDelete
 } from './handlers/chain-handler.js';
 import { handleChainExport } from './handlers/chain-handler.js';
+import {
+    handleOutboundsList,
+    handleOutboundCreate,
+    handleOutboundUpdate,
+    handleOutboundDelete
+} from './handlers/outbound-handler.js';
+import {
+    handleRoutingRulesList,
+    handleRoutingRuleCreate,
+    handleRoutingRuleUpdate,
+    handleRoutingRuleDelete
+} from './handlers/routing-rule-handler.js';
 import { safeFetchPublicUrl, validatePublicFetchUrl, redactUrl } from './security-utils.js';
 import { normalizeSubconverterBackend } from './subscription/main-handler.js';
 import { maybeRunScheduledTasks } from './scheduled-task-runner.js';
@@ -315,6 +327,54 @@ export async function handleApiRequest(request, env, context = null) {
         }
         if (request.method === 'DELETE') {
             return await handleChainDelete(request, env, chainId);
+        }
+        return createJsonResponse({ error: 'Method Not Allowed' }, 405);
+    }
+
+    // Outbound Settings routes (CRUD require auth)
+    if (path === '/outbounds') {
+        if (request.method === 'GET') {
+            return await handleOutboundsList(request, env);
+        }
+        if (request.method === 'POST') {
+            return await handleOutboundCreate(request, env);
+        }
+        return createJsonResponse({ error: 'Method Not Allowed' }, 405);
+    }
+    if (path.startsWith('/outbounds/')) {
+        const outboundId = path.replace('/outbounds/', '');
+        if (!outboundId) {
+            return createJsonResponse({ error: 'Outbound ID is required' }, 400);
+        }
+        if (request.method === 'PUT') {
+            return await handleOutboundUpdate(request, env, outboundId);
+        }
+        if (request.method === 'DELETE') {
+            return await handleOutboundDelete(request, env, outboundId);
+        }
+        return createJsonResponse({ error: 'Method Not Allowed' }, 405);
+    }
+
+    // Routing Rules routes (CRUD require auth)
+    if (path === '/routing-rules') {
+        if (request.method === 'GET') {
+            return await handleRoutingRulesList(request, env);
+        }
+        if (request.method === 'POST') {
+            return await handleRoutingRuleCreate(request, env);
+        }
+        return createJsonResponse({ error: 'Method Not Allowed' }, 405);
+    }
+    if (path.startsWith('/routing-rules/')) {
+        const ruleId = path.replace('/routing-rules/', '');
+        if (!ruleId) {
+            return createJsonResponse({ error: 'Rule ID is required' }, 400);
+        }
+        if (request.method === 'PUT') {
+            return await handleRoutingRuleUpdate(request, env, ruleId);
+        }
+        if (request.method === 'DELETE') {
+            return await handleRoutingRuleDelete(request, env, ruleId);
         }
         return createJsonResponse({ error: 'Method Not Allowed' }, 405);
     }
