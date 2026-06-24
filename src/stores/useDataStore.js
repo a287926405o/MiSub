@@ -414,6 +414,7 @@ export const useDataStore = defineStore('data', () => {
         subscriptions,
         profiles,
         ruleTemplates,
+        chains,
         settings,
         isLoading,
         saveState,

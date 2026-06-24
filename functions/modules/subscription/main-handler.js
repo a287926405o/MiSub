@@ -21,6 +21,7 @@ import { shouldApplyExternalTemplateForTarget } from './template-compatibility.j
 import { renderClashFromIniTemplate, renderLoonFromIniTemplate, renderQuanxFromIniTemplate, renderSingboxFromIniTemplate, renderSurgeFromIniTemplate } from './template-pipeline.js';
 import { getBuiltinTemplate } from './builtin-template-registry.js';
 import { assertPublicNetworkUrl } from '../security-utils.js';
+import { getChainsData } from '../handlers/chain-handler.js';
 
 function maskSensitiveLogValue(value) {
     const text = String(value ?? '');
@@ -382,10 +383,11 @@ export async function handleMisubRequest(context) {
 
     const storageAdapter = StorageFactory.createAdapter(env, await StorageFactory.getStorageType(env));
     context.storage = storageAdapter;
-    const [settingsData, allMisubs, allProfiles] = await Promise.all([
+    const [settingsData, allMisubs, allProfiles, chainsData] = await Promise.all([
         storageAdapter.get(KV_KEY_SETTINGS),
         storageAdapter.getAllSubscriptions(),
-        storageAdapter.getAllProfiles()
+        storageAdapter.getAllProfiles(),
+        getChainsData(env).catch(() => [])   // [Chain Proxy] Load chains
     ]);
     const settings = settingsData || {};
 
@@ -398,6 +400,7 @@ export async function handleMisubRequest(context) {
     // 关键：我们在这里定义了 `config`，后续都应该使用它
     const config = migrateConfigSettings({ ...defaultSettings, ...settings });
     context.config = config;
+    context.chains = Array.isArray(chainsData) ? chainsData : []; // [Chain Proxy]
     context.accessLogPersistenceMode = config.accessLogPersistenceMode || 'light';
 
     // [Subconverter API] 提取 URL 控制参数，用于覆盖默认设置
@@ -787,7 +790,8 @@ export async function handleMisubRequest(context) {
                     templateSource,
                     managedConfigUrl: builtinOptions.managedConfigUrl,
                     storageAdapter,
-                    userInfoHeader
+                    userInfoHeader,
+                    chains: context?.chains || []        // [Chain Proxy]
                 });
 
                 if (rendered.headers?.['X-MiSub-Template-Mode'] === 'clash-yaml-profile') {
@@ -969,7 +973,8 @@ export async function handleMisubRequest(context) {
                 templateSource,
                 managedConfigUrl,
                 storageAdapter,
-                userInfoHeader
+                userInfoHeader,
+                chains: context?.chains || []        // [Chain Proxy]
             });
 
             // [Subconverter API] 处理 list=true 逻辑：仅输出节点片段
